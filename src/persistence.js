@@ -64,14 +64,28 @@ export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,s
       const profile=await loadProfile(c,testProfile);
       const open=profileOpen(new Date(now()),profile.settings,tz);
       const plan=decideProfile(job.intent,state?.state,profile,open);
-      if(!plan){await finish('done');return;}
+      if(!plan){
+        // Keep human handoff active while the authorized contact keeps chatting.
+        if(testNumberId==='waha_test'&&state?.state==='handoff')await c.query("UPDATE connect_sessions SET expires_at=now()+interval '24 hours' WHERE number_id=$1 AND contact_hash=$2 AND state='handoff'",[job.number_id,job.contact_hash]);
+        await finish('done');return;
+      }
+      const saveState=()=>c.query(`INSERT INTO connect_sessions(number_id,contact_hash,state,branch_id,expires_at) VALUES($1,$2,$3,$4,now()+interval '24 hours') ON CONFLICT(number_id,contact_hash) DO UPDATE SET state=EXCLUDED.state,branch_id=EXCLUDED.branch_id,expires_at=EXCLUDED.expires_at`,[job.number_id,job.contact_hash,plan.next,plan.branch??null]);
+      // WAHA: checkpoint BEFORE sending. A timeout or unexpected response can
+      // occur after delivery; repeating greetings on every new message is worse
+      // than a failed prompt. Explicit MENU recovers a failed/uncertain step.
+      // The claimed job and session-level lock prevent another worker racing.
+      const checkpoint=testNumberId==='waha_test';
+      if(checkpoint){await saveState();emit('automation_state_saved',{line:numberId,state:plan.next,...(plan.branch?{branch:plan.branch}:{})});}
       let out;
-      try{out=await send(phoneId,job.recipient,plan.payload);}catch(e){await finish(e.httpStatus?'failed':'uncertain');emit('automation_send_failed',{line:numberId,httpStatus:e.httpStatus,metaCode:e.metaCode,metaSubcode:e.metaSubcode});await diagnostics?.record('send_error',job.message_hash,[e.metaCode]);return;}
-      await c.query('BEGIN');
-      try{await c.query(`INSERT INTO connect_sessions(number_id,contact_hash,state,branch_id,expires_at) VALUES($1,$2,$3,$4,now()+interval '24 hours') ON CONFLICT(number_id,contact_hash) DO UPDATE SET state=EXCLUDED.state,branch_id=EXCLUDED.branch_id,expires_at=EXCLUDED.expires_at`,[job.number_id,job.contact_hash,plan.next,plan.branch??null]);await finish('done');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}
+      try{out=await send(phoneId,job.recipient,plan.payload);}catch(e){await finish(e.httpStatus?'failed':'uncertain');emit('automation_send_failed',{line:numberId,httpStatus:e.httpStatus,metaCode:e.metaCode,metaSubcode:e.metaSubcode,...(checkpoint?{statePreserved:true,reason:e.safeReason||'send_failed'}:{})});await diagnostics?.record('send_error',job.message_hash,[e.metaCode]);return;}
+      if(checkpoint){await finish('done');}
+      else {
+        await c.query('BEGIN');
+        try{await saveState();await finish('done');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}
+      }
       await diagnostics?.record('accepted',out);
       emit('automation_sent',{line:numberId,messageIdSuffix:out.slice(-8),...(plan.branch?{branch:plan.branch,routeStatus:plan.routeStatus}:{})});
-    }catch{broken=true;emit('automation_db_error');}finally{if(c){if(locked&&!broken)try{await c.query('SELECT pg_advisory_unlock(40400302)');}catch{broken=true;}c.release(broken);}busy=false;}
+    }catch(e){broken=true;emit('automation_db_error',{line:numberId,...(typeof e?.code==='string'&&/^[0-9A-Z]{5}$/.test(e.code)?{sqlstate:e.code}:{})});}finally{if(c){if(locked&&!broken)try{await c.query('SELECT pg_advisory_unlock(40400302)');}catch{broken=true;}c.release(broken);}busy=false;}
   }
   return {enqueue,tick};
 }

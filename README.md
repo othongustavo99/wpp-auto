@@ -1,4 +1,4 @@
-# 40Hz Connect — Fase 11 — Correção 02 (v0.11.2)
+# 40Hz Connect — Fase 11 — Correção 03 (v0.11.3)
 
 Base: ZIP 40hzconnect.zip fornecido pelo usuário, fase 10. Adiciona controle autenticado da sessão piloto WAHA `connect_test`: criar/iniciar, status, QR e pausar. Nenhuma linha comercial é conectada ou ativada nesta etapa. As funcionalidades anteriores e o banco são mantidos. WAHA é integração não oficial; há risco de suspensão e desconexão. Não use números comerciais ou conversas de pacientes no piloto.
 
@@ -31,3 +31,18 @@ Segurança: deixe WAHA_LOG_LEVEL=info e não compartilhe logs de debug, QR, dado
 Validação: 55 testes aprovados, zero falhas, um ignorado (PostgreSQL real indisponível). WAHA real e entrega ainda pendentes. Logs de descarte agora acrescentam apenas o tipo de endereço e a disponibilidade de endereço alternativo, sem revelar IDs.
 
 Documentação: https://waha.devlike.pro/docs/how-to/contacts/ e https://waha.devlike.pro/docs/engines/noweb/.
+
+
+## Correção 11.3 — estado da conversa e atendimento humano
+
+Base: Correção 11.2. A entrega de mensagens foi confirmada pelo usuário; o menu repetia em vez de avançar. O código anterior gravava a etapa somente depois de interpretar a resposta de envio. Nesta versão o piloto WAHA grava a etapa antes da chamada de envio, sob o lock do worker. Uma falha ou confirmação ambígua do envio não reinicia automaticamente o menu; `MENU` permite recuperar explicitamente o fluxo. Uma falha no banco antes do envio impede a resposta. A entrega real continua sendo verificada no telefone.
+
+- `1` = Monte Verde, `2` = Camanducaia, `3` = Cambuí; nomes também aceitos. Confirmação inclui a unidade mesmo se o texto personalizado não contiver `{unidade}`.
+- Após seleção ou saudação direta, o bot fica silencioso durante o atendimento humano. O prazo de 24 horas de inatividade é renovado a cada mensagem autorizada processada em handoff. `MENU` reabre o atendimento. Uma opção inválida antes da seleção gera no máximo um aviso por ciclo.
+- Respostas do WAHA com identificador simples ou aninhado são reconhecidas. Se não houver identificador, o envio fica incerto, sem repetição automática.
+- Novos logs: `automation_state_saved` com `state` e eventualmente `branch`; `automation_send_failed` com `statePreserved`; `automation_db_error` com SQLSTATE seguro quando disponível.
+- Nenhuma nova variável, migração ou dependência. Preserve o volume e o pareamento. Não altere o filtro de contatos. Mantenha `WAHA_LOG_LEVEL=info`.
+
+Instalação: extraia sobre o projeto, execute `npm ci`, `npm test`, commit e push. Confira `40hz-connect@0.11.3 start` no Railway e `WAHA_AUTOMATION_ENABLED=true` apenas durante o piloto autorizado. Envie `MENU`, escolha `1`, envie uma frase comum (não deve haver resposta); repita com `MENU` e opções `2` e `3`.
+
+Validação local: 62 testes aprovados, 1 ignorado (PostgreSQL real indisponível). Novos testes exercitam o webhook adaptado, fila e persistência simuladas, as três escolhas, reinício do worker, falha de envio após entrega, falha no banco, expiração e perfis diretos. Validação em produção permanece pendente. Nenhuma linha comercial ativada.

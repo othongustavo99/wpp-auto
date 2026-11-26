@@ -71,7 +71,8 @@ export function createWahaClient({base,key,session=SESSION,expected,recipients=[
   const cached=verified.get(to);
   const chatId=cached&&cached.expires>Date.now()?cached.chatId:await resolveRecipient(to);if(!chatId)throw Error('WAHA recipient not resolved');
   const data=await request('/api/sendText',{session,chatId,text:formatPayload(payload),linkPreview:false});
-  if(typeof data?.id!=='string'||!data.id)throw Error('WAHA message id unavailable');return data.id;
+  const id=[data?.id,data?.id?._serialized,data?.key?.id,data?._data?.key?.id].find(v=>typeof v==='string'&&v.length>0&&v.length<=1024);
+  if(!id)throw Object.assign(Error('WAHA message id unavailable'),{safeReason:'missing_message_id'});return id;
  }
  const sessionPath=name=>'/api/sessions/'+encodeURIComponent(name);
  const createSession=body=>request('/api/sessions',body);

@@ -48,7 +48,7 @@ export function decideProfile(msg,state,profile,open){
  if(!s.automationEnabled)return null;
  const typed=msg.type==='text'?normalize(msg.text?.body):'';
  const selected=msg.type==='interactive'&&msg.interactive?.type==='list_reply'?msg.interactive.list_reply?.id:'';
- const welcome=(branch,kind)=>({next:'handoff',branch:branch.id,routeStatus:'same_number',payload:text([render(m[kind],s,branch.name),open&&s.busy?render(m.busy,s,branch.name):'',render(m.prompt,s,branch.name)].filter(Boolean).join('\n\n'))});
+ const welcome=(branch,kind)=>({next:'handoff',branch:branch.id,routeStatus:'same_number',payload:text([kind.startsWith('selected')&&!m[kind].includes('{unidade}')?`Unidade selecionada: ${branch.name}.`: '',render(m[kind],s,branch.name),open&&s.busy?render(m.busy,s,branch.name):'',render(m.prompt,s,branch.name)].filter(Boolean).join('\n\n'))});
  if(units.length===1){if(!state||typed==='menu')return welcome(units[0],open?'directOpen':'directClosed');return null;}
  const show=()=>({next:'menu',payload:{type:'interactive',interactive:{type:'list',body:{text:render(m[open?'menuOpen':'menuClosed'],s)},footer:{text:'FORP | Atendimento'},action:{button:'Escolher unidade',sections:[{title:'Unidades FORP',rows:units.map(b=>({id:b.id,title:b.name}))}]}}}});
  if(typed==='menu'||!state)return show();
