@@ -1,30 +1,61 @@
-# 40Hz Connect — Fase 03 (v0.3.0)
+# 40Hz Connect — Fase 04 (v0.4.0)
 
-Atualização do ZIP da Fase 2: PostgreSQL, cadastro de números e filiais, fila de eventos e sessões persistentes. Mantém a API e o webhook existentes. Node.js 22+, dependência pg 8.16.3.
+Atualização completa sobre o ZIP exato da Fase 3. Adiciona roteamento por unidade usando o vínculo `connect_branches.number_id` que já existia no PostgreSQL. Mantém o webhook, a fila persistente, a deduplicação, a janela de atendimento, a lista de unidades e a proteção por destinatários autorizados. Node.js 22+ e pg 8.16.3 (mesma dependência anterior).
 
-## Atualização obrigatória
+## Atualizar
 
-Extraia sobre a raiz do repositório atual, substituindo arquivos existentes. Não exclua `.git`, `.env` ou variáveis. O ZIP não traz package-lock.json porque o ambiente de geração não teve acesso ao npm. Antes de enviar ao GitHub, execute `npm install` (não `npm ci` inicialmente), que atualiza o lock existente, e `npm test`. Depois `git add .`, `git commit -m "Fase 03 - PostgreSQL e persistencia"`, `git push`. Inclua package-lock.json gerado no commit. Railway fará o deploy. Não é necessário reconfigurar webhook.
+Extraia sobre a raiz do repositório atual, substituindo os arquivos existentes. Não exclua `.git`, `.env`, o banco ou as variáveis. O ZIP não inclui `package-lock.json`: rode `npm install` para atualizar o lock da Fase 3 para a versão 0.4.0, depois `npm test`. Inclua o lock atualizado no Git.
+
+```powershell
+npm install
+npm test
+git add .
+git commit -m "Fase 04 - Direcionamento por unidade"
+git push
+```
+
+Railway fará o deploy se estiver conectado ao repositório. Não é necessário recriar banco, domínio ou webhook. Antes do deploy em ambiente ativo, mantenha backup do banco e dos arquivos. Não execute testes de integração contra o banco do cliente.
 
 ## Variáveis
 
-Mantenha as 11 variáveis existentes, sem adicionar outras: PORT=8080, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION=v25.0, DATABASE_URL (referência privada do Postgres no mesmo projeto), TZ=America/Sao_Paulo, WHATSAPP_AUTOMATION_ENABLED=true, WHATSAPP_TEST_RECIPIENTS (números pessoais autorizados, dígitos internacionais, separados por vírgula). Renove tokens temporários expirados. Mantenha o aplicativo e banco na mesma rede Railway. Não divulgue segredos. Alterar META_APP_SECRET também altera o HMAC usado para pseudonimização, invalidando a deduplicação/sessões anteriores. Não habilite números FORP ainda.
+Mantenha as 11 anteriores: PORT=8080, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION=v25.0, DATABASE_URL, TZ=America/Sao_Paulo, WHATSAPP_AUTOMATION_ENABLED=true, WHATSAPP_TEST_RECIPIENTS. Use somente números pessoais autorizados para teste, separados por vírgula. Renove token temporário se expirado. Não exponha segredos. O backend ainda usa apenas o número de teste, e os números FORP permanecem desativados para automação.
 
-## Verificação do deploy
+Nova variável **opcional** `FORP_BRANCH_ROUTES`: JSON objeto com as chaves das unidades e valores `forp_01`, `forp_02`, `forp_03` ou `null`. Não crie a variável até confirmar os vínculos com a FORP. Ausente ou vazia preserva o banco. Se fornecida, é a configuração completa: unidades omitidas ou nulas ficam sem vínculo. `{}` remove todos os vínculos. Aplicação transacional na inicialização, sem alterar número, IDs Meta ou habilitação. JSON inválido interrompe a inicialização; corrija o valor e faça novo deploy.
 
-GET /health: {"service":"40Hz Connect","status":"ok","phase":3,"database":"ok"}. Falha de consulta ao banco responde 503. Logs: database_migrated, server_started, automation_queued, automation_sent, automation_send_failed, automation_db_error, message_status. Se startup_failed, confira DATABASE_URL, variáveis e instalação pg; não exponha credenciais. Migration idempotente aplicada na inicialização (001_core.sql). Use uma única réplica no piloto; o worker também usa advisory lock no banco. Testes locais não executaram SQL real: o ambiente não tem PostgreSQL nem acesso ao registry npm. Teste de integração opcional: crie um banco descartável vazio e defina TEST_DATABASE_URL para ele, nunca para o banco do cliente; execute npm test. Testes locais usam mocks para banco e Meta. Não houve teste real de entrega.
+| Identificador | Número comercial confirmado |
+|---|---|
+| forp_01 | (11) 91462-2444 |
+| forp_02 | (35) 98885-0459 |
+| forp_03 | (11) 99990-3346 |
 
-## Estrutura de dados
+| Chave | Unidade |
+|---|---|
+| cambui | Cambuí |
+| camanducaia | Camanducaia |
+| monte_verde | Monte Verde |
+| joanopolis | Joanópolis |
+| braganca | Bragança Paulista |
 
-- connect_numbers: três números FORP cadastrados com enabled=false, sem IDs Meta. Número de teste registrado na inicialização quando a automação estiver ativa.
-- connect_branches: Cambuí, Camanducaia, Monte Verde, Joanópolis, Bragança Paulista; number_id nulo até confirmar o mapeamento.
-- connect_sessions: estado de conversa por número e contato pseudonimizado, unidade escolhida, expiração após 24h da última resposta.
-- connect_events: fila persistente, deduplicação por número e hash HMAC de ID da mensagem, situação de processamento. Eventos aceitos são persistidos antes do HTTP 200. O worker processa um evento por vez. Guarda destinatário temporariamente e apenas intenção reconhecida, não texto livre nem anexos. Remove destinatário e intenção após conclusão/expiração; registros finalizados são removidos após 7 dias, sessões após expiração. Limpeza ocorre enquanto o worker está ligado. Não guarda histórico de conversas.
+Exemplo de formato sem qualquer associação presumida:
 
-## Teste funcional
+```json
+{"cambui":null,"camanducaia":null,"monte_verde":null,"joanopolis":null,"braganca":null}
+```
 
-Confirme inscrição messages e WABA, requisitos de publicação e autorização do destinatário de teste. Envie Olá ao número de teste. O menu deve listar cinco unidades. Escolha uma e reinicie o deploy: se a sessão estiver ativa, o bot não deve repetir a saudação quando receber nova mensagem comum. Digite MENU para abrir novamente. A regra de atendimento permanece segunda a sexta, 08h–17h (dias provisórios), sem feriados. Eventos de teste do painel não garantem recebimento de mensagens reais. A API aceita uma solicitação sem garantir entrega; procure message_status=failed e código de erro. Eventos de status são registrados nos logs, não persistidos como histórico. O banco guarda o estado de processamento interno, não o status de entrega final.
+Depois de confirmar os responsáveis, substitua cada `null` pelo identificador correto entre aspas. Duas ou mais unidades podem compartilhar o mesmo número. Não confunda o vínculo com a ativação da automação no número comercial.
 
-## Limitações e segurança
+## Fluxo
 
-Não existe garantia de entrega exatamente uma vez: se o processo parar após reclamar evento e antes de concluir o envio, o evento fica processing e depois uncertain, sem reenvio automático, para evitar duplicidade. Falha de rede/timeout também não é reenviada. Falha na persistência do webhook retorna 500 e a Meta pode repetir o evento; eventos já inseridos são deduplicados. Alterações no número de teste podem exigir limpeza controlada dos estados; não use o cadastro para alternar contas. Não existe ainda painel, transferência real, roteamento por número comercial, controle de ocupação de atendentes, gestão de tokens por empresa ou fila humana. A base permite múltiplos registros, mas nesta fase somente o número de teste configurado no ambiente é processado. Números FORP: (11) 91462-2444, (35) 98885-0459, (11) 99990-3346; sem associação às unidades. Não remover WhatsApp Business, não migrar números sem autorização e verificação de coexistência. Não solicitar dados médicos. Antes de produção: retenção/privacidade, política de acesso, integração real e validação dos fluxos.
+O número de teste recebe mensagem de destinatário autorizado, apresenta lista das cinco unidades e, após seleção, consulta o PostgreSQL. Se houver destino válido, responde **ao destinatário de teste** com link `https://wa.me/` e texto pré-preenchido mencionando a unidade. O cliente precisa abrir o link e enviar a mensagem; não há transferência de histórico, envio automático ao telefone da filial nem distribuição interna de conversas. O link leva a um WhatsApp real da FORP se o vínculo for configurado: não envie a mensagem de teste à equipe sem autorização. Sem destino, informa explicitamente que o direcionamento não está configurado. A sessão para de responder até `MENU` ou expiração. Horários: segunda a sexta, 8–17h, sem feriados, dias provisórios. O texto fora do expediente indica o horário; não presume disponibilidade humana. Nenhum conteúdo médico é solicitado.
+
+## Verificação
+
+GET /health: {"service":"40Hz Connect","status":"ok","phase":4,"database":"ok"}. Logs: `database_migrated`, `server_started`, `branch_routes_configured` (somente com variável de mapa fornecida), `automation_queued`, `automation_sent` com `branch` e `routeStatus` (`link_offered` ou `unassigned`) ao selecionar unidade. `automation_send_failed` informa códigos de erro Meta; `message_status` registra eventos de entrega. `link_offered` não significa que cliente clicou, nem entrega confirmada.
+
+Teste primeiro sem mapa: envie MENU no número de teste, selecione uma unidade e confira que não há encaminhamento incorreto. Após confirmar o mapa, configure a variável, reinicie o deploy, envie MENU e selecione cada unidade, confira o destino do link e o texto preenchido sem enviar mensagem real não autorizada. Se a API não entregar ou o webhook não receber evento real, confira assinatura do campo messages, inscrição WABA, requisitos de publicação, destinatário permitido e validade do token.
+
+## Testes e limites
+
+`npm test` cobre roteamento, validação do mapa, transação e rollback com mocks, links das cinco unidades, ausência de vínculo, envio somente ao destinatário de teste, segurança do webhook e persistência simulada. Teste real PostgreSQL opcional com `TEST_DATABASE_URL` apontando para banco vazio e descartável. Neste ambiente não houve conexão real ao PostgreSQL nem envio ao WhatsApp. O ZIP não inclui lockfile atualizado. A instalação da dependência pg deve ocorrer no ambiente do usuário. Não há painel administrativo, fila humana real, detecção de atendente ocupado nem automação ativa nos três números. A integração de produção depende da autorização da FORP, configuração de contas e IDs Meta, tokens, permissões, requisitos de coexistência e validação de entrega. Não migre nem exclua os WhatsApps Business existentes.
+
+A Fase 3 mantém seus limites: eventos recebidos persistidos antes de HTTP 200, deduplicação por HMAC, mensagens ambíguas/timeout não são reenviadas automaticamente, sessões expiram e eventos finalizados são limpos. O backend não guarda conteúdo livre nem anexos; destinatário fica temporariamente na fila. Rotação de META_APP_SECRET altera hashes anteriores. Use uma réplica no piloto. Não confunda status interno da fila com entrega ao cliente.

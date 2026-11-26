@@ -1,6 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {createHmac} from 'node:crypto';
 import {branches,decide,isOpen} from './automation.js';
+import {lookupRoute,routeSelection} from './routing.js';
 const DAY=86400000;
 const normalize=s=>String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
 // Store only commands recognized by the bot; never store free text or attachments.
@@ -59,13 +60,15 @@ export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,s
       const finish=async status=>c.query('UPDATE connect_events SET status=$3,recipient=NULL,intent=NULL,finished_at=now() WHERE number_id=$1 AND message_hash=$2',[...args,status]);
       if(!allowed.has(job.recipient)||now()-new Date(job.occurred_at).getTime()>=DAY){await finish('expired');return;}
       const state=(await c.query('SELECT state,branch_id FROM connect_sessions WHERE number_id=$1 AND contact_hash=$2 AND expires_at>now()',[job.number_id,job.contact_hash])).rows[0];
-      const plan=decide(job.intent,state?.state,isOpen(new Date(now()),tz));
+      const open=isOpen(new Date(now()),tz);
+      let plan=decide(job.intent,state?.state,open);
+      if(plan?.branch)plan=routeSelection(plan,await lookupRoute(c,plan.branch),open);
       if(!plan){await finish('done');return;}
       let out;
       try{out=await send(phoneId,job.recipient,plan.payload);}catch(e){await finish(e.httpStatus?'failed':'uncertain');emit('automation_send_failed',{httpStatus:e.httpStatus,metaCode:e.metaCode,metaSubcode:e.metaSubcode});return;}
       await c.query('BEGIN');
       try{await c.query(`INSERT INTO connect_sessions(number_id,contact_hash,state,branch_id,expires_at) VALUES($1,$2,$3,$4,now()+interval '24 hours') ON CONFLICT(number_id,contact_hash) DO UPDATE SET state=EXCLUDED.state,branch_id=EXCLUDED.branch_id,expires_at=EXCLUDED.expires_at`,[job.number_id,job.contact_hash,plan.next,plan.branch??null]);await finish('done');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}
-      emit('automation_sent',{messageIdSuffix:out.slice(-8),...(plan.branch?{branch:plan.branch}:{})});
+      emit('automation_sent',{messageIdSuffix:out.slice(-8),...(plan.branch?{branch:plan.branch,routeStatus:plan.routeStatus}:{})});
     }catch{broken=true;emit('automation_db_error');}finally{if(c){if(locked&&!broken)try{await c.query('SELECT pg_advisory_unlock(40400302)');}catch{broken=true;}c.release(broken);}busy=false;}
   }
   return {enqueue,tick};

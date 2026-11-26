@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import { createMetaSender } from './automation.js';
 import { migrate, registerTest, createPersistentAutomation } from './persistence.js';
+import {parseRoutes,applyRoutes} from './routing.js';
 
 const equal = (a,b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
 const safeCode = v => typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined;
@@ -15,7 +16,7 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, l
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) {
         let db='not_configured';try{if(databaseCheck){await databaseCheck();db='ok';}}catch{db='unavailable';}
-        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:3,database:db}), 'application/json');
+        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:4,database:db}), 'application/json');
       }
       if (url.pathname !== '/webhook') return send(404,'Not found');
       if (req.method === 'GET') {
@@ -58,10 +59,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const port=Number(env.PORT||8080),enabled=env.WHATSAPP_AUTOMATION_ENABLED==='true';
   async function start(){
     if(!env.DATABASE_URL)throw new Error('DATABASE_URL required');
+    const routes=parseRoutes(env.FORP_BRANCH_ROUTES);
     const {Pool}=await import('pg');
     const pool=new Pool({connectionString:env.DATABASE_URL,max:5,connectionTimeoutMillis:5000,statement_timeout:5000});
     pool.on('error',()=>console.error(JSON.stringify({event:'database_pool_error'})));
-    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:3}));
+    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:4}));
+    const configured=await applyRoutes(pool,routes);
+    if(configured!==null)console.log(JSON.stringify({event:'branch_routes_configured',configured,total:5}));
     let automation;
     if(enabled){
       const phoneId=env.WHATSAPP_PHONE_NUMBER_ID,wabaId=env.WHATSAPP_BUSINESS_ACCOUNT_ID;
@@ -70,7 +74,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     }
     const server=createApp({verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation,databaseCheck:()=>pool.query('SELECT 1')});
     const timer=automation?setInterval(()=>void automation.tick(),1000):undefined;
-    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:3})));
+    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:4})));
     const stop=()=>{clearInterval(timer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
     process.once('SIGTERM',stop);process.once('SIGINT',stop);
   }
