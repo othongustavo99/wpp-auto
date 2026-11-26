@@ -4,12 +4,13 @@ import { pathToFileURL } from 'node:url';
 import { createMetaSender } from './automation.js';
 import { migrate, registerTest, createPersistentAutomation } from './persistence.js';
 import {createAdmin} from './admin.js';
+import {createDiagnostics} from './diagnostics.js';
 import {parseRoutes,applyRoutes} from './routing.js';
 
 const equal = (a,b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
 const safeCode = v => typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined;
 const maskId = v => typeof v === 'string' && v.length > 8 ? v.slice(-8) : undefined;
-export function createApp({ verifyToken, appSecret, automation, databaseCheck, admin, log = console.log }) {
+export function createApp({ verifyToken, appSecret, automation, databaseCheck, admin, diagnostics, log = console.log }) {
   if (!verifyToken || !appSecret) throw new Error('Defina WHATSAPP_VERIFY_TOKEN e META_APP_SECRET');
   return createServer(async (req, res) => {
     const send = (code, text, type = 'text/plain; charset=utf-8') => { res.writeHead(code, {'Content-Type':type,'Cache-Control':'no-store'}); res.end(text); };
@@ -17,7 +18,7 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, a
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) {
         let db='not_configured';try{if(databaseCheck){await databaseCheck();db='ok';}}catch{db='unavailable';}
-        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:6,database:db}), 'application/json');
+        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:7,database:db}), 'application/json');
       }
       if (url.pathname==='/admin'||url.pathname.startsWith('/admin/')) {if(!admin)return send(503,'Painel desativado');return await admin(req,res,url);}
       if (url.pathname !== '/webhook') return send(404,'Not found');
@@ -42,11 +43,13 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, a
           if (change?.field !== 'messages') continue;
           const value=change.value;
           for(const status of Array.isArray(value?.statuses)?value.statuses:[]) {
+            await diagnostics?.status(entry?.id,value?.metadata,status);
             const allowed=['sent','delivered','read','failed','deleted','warning'];
             log(JSON.stringify({event:'message_status',status:allowed.includes(status?.status)?status.status:'unknown',messageIdSuffix:maskId(status?.id),errorCodes:(Array.isArray(status?.errors)?status.errors:[]).map(x=>safeCode(x?.code)).filter(x=>x!==undefined)}));
           }
           for(const msg of Array.isArray(value?.messages)?value.messages:[]) {
             log(JSON.stringify({event:'incoming_message',messageIdSuffix:maskId(msg?.id)}));
+            await diagnostics?.incoming(entry?.id,value?.metadata,msg);
             await automation?.enqueue(entry?.id,value?.metadata,msg);
           }
           if (!value?.statuses?.length && !value?.messages?.length) log(JSON.stringify({event:'messages_webhook_received'}));
@@ -65,20 +68,24 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const {Pool}=await import('pg');
     const pool=new Pool({connectionString:env.DATABASE_URL,max:5,connectionTimeoutMillis:5000,statement_timeout:5000});
     pool.on('error',()=>console.error(JSON.stringify({event:'database_pool_error'})));
-    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:6}));
+    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:7}));
     const configured=await applyRoutes(pool,routes);
     if(configured!==null)console.log(JSON.stringify({event:'branch_routes_configured',configured,total:5}));
+    const testRecipients=(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean);
+    const diagnostics=createDiagnostics({pool,phoneId:env.WHATSAPP_PHONE_NUMBER_ID,wabaId:env.WHATSAPP_BUSINESS_ACCOUNT_ID,appId:env.META_APP_ID,token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0',secret:env.META_APP_SECRET,testRecipients});
     let automation;
     if(enabled){
       const phoneId=env.WHATSAPP_PHONE_NUMBER_ID,wabaId=env.WHATSAPP_BUSINESS_ACCOUNT_ID;
       await registerTest(pool,{phoneId,wabaId});
-      automation=createPersistentAutomation({pool,phoneId,wabaId,testRecipients:(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean),secret:env.META_APP_SECRET,send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo',testProfile:env.FORP_TEST_PROFILE||'forp_02'});
+      automation=createPersistentAutomation({pool,phoneId,wabaId,testRecipients,diagnostics,secret:env.META_APP_SECRET,send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo',testProfile:env.FORP_TEST_PROFILE||'forp_02'});
     }
-    const admin=env.ADMIN_PASSWORD?createAdmin({pool,password:env.ADMIN_PASSWORD,appSecret:env.META_APP_SECRET,enabled,testProfile:env.FORP_TEST_PROFILE||'forp_02'}):undefined;
-    const server=createApp({admin,verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation,databaseCheck:()=>pool.query('SELECT 1')});
+    const admin=env.ADMIN_PASSWORD?createAdmin({pool,diagnostics,password:env.ADMIN_PASSWORD,appSecret:env.META_APP_SECRET,enabled,testProfile:env.FORP_TEST_PROFILE||'forp_02'}):undefined;
+    const server=createApp({admin,diagnostics,verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation,databaseCheck:()=>pool.query('SELECT 1')});
     const timer=automation?setInterval(()=>void automation.tick(),1000):undefined;
-    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:6})));
-    const stop=()=>{clearInterval(timer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
+    const cleanup=()=>pool.query("DELETE FROM connect_diagnostics WHERE observed_at<now()-interval '7 days'").catch(()=>console.error(JSON.stringify({event:'diagnostics_cleanup_failed'})));
+    await cleanup();const cleanupTimer=setInterval(()=>void cleanup(),3600000);
+    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:7})));
+    const stop=()=>{clearInterval(timer);clearInterval(cleanupTimer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
     process.once('SIGTERM',stop);process.once('SIGINT',stop);
   }
   start().catch(()=>{console.error(JSON.stringify({event:'startup_failed',hint:'Check DATABASE_URL, pg installation, Meta variables and database permissions'}));process.exit(1);});

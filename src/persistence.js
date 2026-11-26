@@ -20,7 +20,7 @@ export function sanitizeIntent(msg){
 export async function migrate(pool){
   const c=await pool.connect();
   try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(40400301)');
-    await c.query(await readFile(new URL('../migrations/001_core.sql',import.meta.url),'utf8'));await c.query(await readFile(new URL('../migrations/002_profiles.sql',import.meta.url),'utf8'));await c.query('COMMIT');
+    await c.query(await readFile(new URL('../migrations/001_core.sql',import.meta.url),'utf8'));await c.query(await readFile(new URL('../migrations/002_profiles.sql',import.meta.url),'utf8'));await c.query(await readFile(new URL('../migrations/003_diagnostics.sql',import.meta.url),'utf8'));await c.query('COMMIT');
   }catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}finally{c.release();}
 }
 export async function registerTest(pool,{phoneId,wabaId}){
@@ -28,7 +28,7 @@ export async function registerTest(pool,{phoneId,wabaId}){
   await pool.query(`INSERT INTO connect_numbers(id,label,phone_id,waba_id,enabled,is_test) VALUES ('meta_test','Meta teste',$1,$2,true,true)
     ON CONFLICT(id) DO UPDATE SET phone_id=EXCLUDED.phone_id,waba_id=EXCLUDED.waba_id,enabled=true,is_test=true`,[phoneId,wabaId]);
 }
-export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,send,secret,log=console.log,now=Date.now,tz='America/Sao_Paulo',testProfile='forp_02'}){
+export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,send,secret,log=console.log,now=Date.now,tz='America/Sao_Paulo',testProfile='forp_02',diagnostics}){
   if(!/^\d+$/.test(phoneId??'')||!/^\d+$/.test(wabaId??'')||!testRecipients?.length||!testRecipients.every(x=>/^\d{8,15}$/.test(x))||!secret||!profileIds.includes(testProfile))throw new Error('Configuracao de teste invalida');
   new Intl.DateTimeFormat('en-US',{timeZone:tz});
   const allowed=new Set(testRecipients), hash=s=>createHmac('sha256',secret).update(s).digest('hex');
@@ -66,9 +66,10 @@ export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,s
       const plan=decideProfile(job.intent,state?.state,profile,open);
       if(!plan){await finish('done');return;}
       let out;
-      try{out=await send(phoneId,job.recipient,plan.payload);}catch(e){await finish(e.httpStatus?'failed':'uncertain');emit('automation_send_failed',{httpStatus:e.httpStatus,metaCode:e.metaCode,metaSubcode:e.metaSubcode});return;}
+      try{out=await send(phoneId,job.recipient,plan.payload);}catch(e){await finish(e.httpStatus?'failed':'uncertain');emit('automation_send_failed',{httpStatus:e.httpStatus,metaCode:e.metaCode,metaSubcode:e.metaSubcode});await diagnostics?.record('send_error',job.message_hash,[e.metaCode]);return;}
       await c.query('BEGIN');
       try{await c.query(`INSERT INTO connect_sessions(number_id,contact_hash,state,branch_id,expires_at) VALUES($1,$2,$3,$4,now()+interval '24 hours') ON CONFLICT(number_id,contact_hash) DO UPDATE SET state=EXCLUDED.state,branch_id=EXCLUDED.branch_id,expires_at=EXCLUDED.expires_at`,[job.number_id,job.contact_hash,plan.next,plan.branch??null]);await finish('done');await c.query('COMMIT');}catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}
+      await diagnostics?.record('accepted',out);
       emit('automation_sent',{messageIdSuffix:out.slice(-8),...(plan.branch?{branch:plan.branch,routeStatus:plan.routeStatus}:{})});
     }catch{broken=true;emit('automation_db_error');}finally{if(c){if(locked&&!broken)try{await c.query('SELECT pg_advisory_unlock(40400302)');}catch{broken=true;}c.release(broken);}busy=false;}
   }
