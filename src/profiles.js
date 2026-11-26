@@ -2,7 +2,7 @@ import {branches} from './automation.js';
 
 export const confirmedRoutes=Object.freeze({cambui:'forp_02',camanducaia:'forp_02',monte_verde:'forp_02',joanopolis:'forp_03',braganca:'forp_01'});
 export const profileIds=Object.freeze(['forp_01','forp_02','forp_03']);
-export const defaults=Object.freeze({days:['Mon','Tue','Wed','Thu','Fri'],start:'08:00',end:'17:00',busy:false,messages:{
+export const defaults=Object.freeze({days:['Mon','Tue','Wed','Thu','Fri'],start:'08:00',end:'17:00',busy:false,automationEnabled:true,messages:{
  directOpen:'Olá! Seja bem-vindo à FORP — unidade {unidade}. Recebemos seu contato. Nossa equipe dará continuidade ao atendimento assim que possível.',
  directClosed:'Olá! Seja bem-vindo à FORP — unidade {unidade}. No momento, estamos fora do expediente. Nosso horário de atendimento é {horario}. Retornaremos no próximo expediente.',
  menuOpen:'Olá! Seja bem-vindo à FORP Segurança & Saúde do Trabalho. Para direcionarmos seu atendimento, selecione uma das nossas unidades abaixo.',
@@ -18,8 +18,9 @@ const timeValid=s=>typeof s==='string'&&/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(s);
 const normalize=s=>String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
 export function validateSettings(raw={}){
  if(!raw||typeof raw!=='object'||Array.isArray(raw))throw Error('Invalid profile settings');
+ if(Object.keys(raw).some(k=>!Object.hasOwn(defaults,k))||('messages' in raw&&(!raw.messages||typeof raw.messages!=='object'||Array.isArray(raw.messages))))throw Error('Invalid profile fields');
  const s={...defaults,...raw,messages:{...defaults.messages,...raw.messages}};
- if(!Array.isArray(s.days)||!s.days.length||new Set(s.days).size!==s.days.length||!s.days.every(d=>Object.hasOwn(dayNames,d))||!timeValid(s.start)||!timeValid(s.end)||s.start>=s.end||typeof s.busy!=='boolean')throw Error('Invalid schedule');
+ if(!Array.isArray(s.days)||!s.days.length||new Set(s.days).size!==s.days.length||!s.days.every(d=>Object.hasOwn(dayNames,d))||!timeValid(s.start)||!timeValid(s.end)||s.start>=s.end||typeof s.busy!=='boolean'||typeof s.automationEnabled!=='boolean')throw Error('Invalid schedule');
  for(const [k,v] of Object.entries(s.messages))if(!Object.hasOwn(defaults.messages,k)||typeof v!=='string'||!v.trim()||v.length>700||/\{(?!unidade\}|horario\})/.test(v))throw Error('Invalid profile message');
  return s;
 }
@@ -44,6 +45,7 @@ export async function loadProfile(client,id){
 }
 export function decideProfile(msg,state,profile,open){
  const {settings:s,branches:units}=profile,m=s.messages;
+ if(!s.automationEnabled)return null;
  const typed=msg.type==='text'?normalize(msg.text?.body):'';
  const selected=msg.type==='interactive'&&msg.interactive?.type==='list_reply'?msg.interactive.list_reply?.id:'';
  const welcome=(branch,kind)=>({next:'handoff',branch:branch.id,routeStatus:'same_number',payload:text([render(m[kind],s,branch.name),open&&s.busy?render(m.busy,s,branch.name):'',render(m.prompt,s,branch.name)].filter(Boolean).join('\n\n'))});

@@ -40,7 +40,7 @@ test('worker consulta perfil persistido e mantém conversa no numero de teste',a
 });
 test('health confirma banco ou retorna 503',async()=>{
  let fail=false;const s=createApp({verifyToken:'x',appSecret:'y',databaseCheck:async()=>{if(fail)throw Error('db')}});
- await new Promise(r=>s.listen(0,'127.0.0.1',r));try{const url=`http://127.0.0.1:${s.address().port}/health`;const ok=await fetch(url);assert.deepEqual(await ok.json(),{service:'40Hz Connect',status:'ok',phase:5,database:'ok'});fail=true;assert.equal((await fetch(url)).status,503);}finally{await new Promise(r=>s.close(r));}
+ await new Promise(r=>s.listen(0,'127.0.0.1',r));try{const url=`http://127.0.0.1:${s.address().port}/health`;const ok=await fetch(url);assert.deepEqual(await ok.json(),{service:'40Hz Connect',status:'ok',phase:6,database:'ok'});fail=true;assert.equal((await fetch(url)).status,503);}finally{await new Promise(r=>s.close(r));}
 });
 // Opt-in only, disposable test database. Never run against the client's production database.
 test('PostgreSQL real: migration, dedup, persistent session and cleanup',{skip:!process.env.TEST_DATABASE_URL},async()=>{

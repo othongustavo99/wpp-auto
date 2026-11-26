@@ -1,67 +1,53 @@
-# 40Hz Connect — Fase 05 (v0.5.0)
+# 40Hz Connect — Fase 06 (v0.6.0)
 
-Atualização completa sobre o ZIP da Fase 4. A automação utiliza perfis por número, horários e mensagens personalizáveis, e a associação das cinco unidades confirmada pelo usuário. A comunicação real continua limitada ao número de teste da Meta e aos destinatários autorizados. Nenhum número comercial será ativado nesta versão.
+Painel administrativo web integrado ao backend Node.js existente. Inclui as fases anteriores, sem novo serviço de hospedagem, sem nova dependência e sem alteração das credenciais da Meta. Interface em HTML/CSS/JavaScript, não Flutter Web: decisão para simplificar a instalação e acelerar esta entrega. Os números oficiais permanecem inativos; a automação real ainda se restringe à linha de teste e à lista de destinatários autorizados.
 
-## Atualizar
+## Instalação
 
-Extraia sobre a raiz atual do repositório, mantendo `.git`, `.env`, banco e variáveis. Faça backup antes de atualizar. Node 22+, mesma dependência `pg` 8.16.3; o ZIP não contém lockfile atualizado. Execute:
+Faça backup do projeto e banco. Extraia o ZIP sobre a raiz atual do repositório, preservando `.git`, `.env` e o banco. Node 22+, dependência `pg` 8.16.3. Não há novo lockfile no ZIP; execute `npm install` para sincronizar o existente.
 
 ```powershell
 npm install
 npm test
 git add .
-git commit -m "Fase 05 - Perfis de atendimento FORP"
+git commit -m "Fase 06 - Painel administrativo"
 git push
 ```
 
-O Railway deve efetuar o deploy caso esteja ligado ao repositório. As migrações 001 e 002 são executadas automaticamente. A migração 002 insere três perfis e aplica uma única vez a associação confirmada, sem apagar conversas, registros ou credenciais. Sessões de teste antigas não serão reutilizadas: o hash passa a incluir o perfil simulado. Eventos pendentes sem perfil ou de perfil diferente serão expirados para evitar respostas incorretas durante a transição.
+No serviço `wpp-auto` do Railway, adicione `ADMIN_PASSWORD` com uma senha exclusiva de 24 a 256 caracteres. Gere uma chave forte no terminal, por exemplo:
 
-## Números, perfis e variáveis
+```powershell
+node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
+```
 
-| Perfil | WhatsApp comercial | Unidades |
-|---|---|---|
-| forp_01 | (11) 91462-2444 | Bragança Paulista |
-| forp_02 | (35) 98885-0459 | Monte Verde, Camanducaia, Cambuí |
-| forp_03 | (11) 99990-3346 | Joanópolis |
+Copie o resultado diretamente para a variável no Railway, guarde-o em gerenciador de senhas e não compartilhe prints nem credenciais. Aplique as variáveis e faça deploy. Se `ADMIN_PASSWORD` estiver ausente, o painel permanece desativado. Senha definida mas curta causa falha de inicialização: use o tamanho recomendado.
 
-Mantenha as 11 variáveis anteriores: PORT=8080, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION=v25.0, DATABASE_URL, TZ=America/Sao_Paulo, WHATSAPP_AUTOMATION_ENABLED=true, WHATSAPP_TEST_RECIPIENTS. Renove o token temporário se estiver vencido. Não compartilhe segredos.
-
-Se existir a variável `FORP_BRANCH_ROUTES` da Fase 4, substitua seu valor pelo JSON a seguir (ou remova a variável antes do primeiro deploy desta fase, para que a migração aplique os vínculos). Um valor antigo na variável sobrescreverá a migração em cada inicialização. Se quiser corrigir um deploy que já aplicou um mapa antigo, forneça o JSON abaixo e faça novo deploy.
+Mantenha as variáveis existentes: PORT, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION, DATABASE_URL, TZ, WHATSAPP_AUTOMATION_ENABLED, WHATSAPP_TEST_RECIPIENTS. `FORP_TEST_PROFILE` continua opcional (padrão forp_02). A variável `FORP_BRANCH_ROUTES`, se existente, deve conter o mapa correto:
 
 ```json
 {"cambui":"forp_02","camanducaia":"forp_02","monte_verde":"forp_02","joanopolis":"forp_03","braganca":"forp_01"}
 ```
 
-`FORP_TEST_PROFILE` é uma variável opcional. Padrão `forp_02`. Altere para `forp_01` ou `forp_03` para testar as saudações diretas. A alteração exige novo deploy e todas as mensagens ainda são enviadas pelo número de teste da Meta. Aguarde a fila terminar antes de trocar o perfil e envie MENU para reiniciar. Nenhum link leva aos números comerciais nos fluxos normais desta fase.
+Não há nova migração: as configurações ficam no JSONB `connect_profiles.settings`. As migrações 001 e 002 continuam idempotentes. O campo novo `automationEnabled` usa true quando ausente, preservando comportamento anterior. Não é necessário alterar o webhook.
 
-## Fluxos
+## Uso
 
-- 2444: saudação Bragança Paulista, dentro ou fora do expediente; segue para atendimento humano na mesma conversa.
-- 3346: saudação Joanópolis, dentro ou fora do expediente; segue para atendimento humano na mesma conversa.
-- 0459: lista interativa Monte Verde, Camanducaia, Cambuí; resposta identifica a unidade escolhida, sem redirecionamento para outro número. Pode escolher pelo menu, nome ou 1/2/3. Uma opção de outra unidade é rejeitada. A seleção fica na sessão persistida; não há ainda distribuição automática entre funcionários.
-- Em todos os perfis, depois da saudação direta ou da seleção, a automação não responde repetidamente. MENU reinicia o fluxo. Sessão expira 24 h após a última resposta automatizada.
-- Expediente padrão segunda a sexta, 08:00 a 17:00, fuso America/Sao_Paulo, sem calendário de feriados. Dias úteis são uma hipótese anterior, ainda a confirmar.
-- O modo de espera por equipe ocupada é uma configuração manual (`busy`), desligada por padrão. Mesmo desligado, a saudação informa que a equipe dará continuidade assim que possível. Não há detecção real de ocupação ou fila humana. O painel da próxima fase deverá expor essa configuração.
-- Não solicita dados médicos. Não armazena texto livre ou anexos; somente intenções reconhecidas, identificadores derivados por HMAC e destinatário temporário da fila.
+Acesse https://wpp-auto-production.up.railway.app/admin e entre com ADMIN_PASSWORD. Se o domínio foi alterado, utilize o domínio HTTPS atual seguido de /admin. GET /health retorna phase 6 e database ok quando o banco está acessível.
 
-## Personalização (estrutura para o painel futuro)
+- Selecione o número: 2444 Bragança Paulista; 3346 Joanópolis; 0459 Monte Verde, Camanducaia e Cambuí.
+- Edite dias, início/fim do expediente, aviso manual de equipe ocupada e nove modelos de mensagem. Use `{unidade}` e `{horario}` nos modelos, até 700 caracteres por campo. No menu inicial não existe unidade escolhida ainda; não use `{unidade}` nesses modelos.
+- Selecione período e filial e clique em Atualizar prévia para simular a conversa com o motor real de decisões. A prévia não grava alterações e não envia mensagens.
+- Salvar alterações grava o perfil no banco. O worker consulta o perfil a cada novo evento. O aviso de espera não detecta ocupação humana. Pausar o perfil impede novas respostas desse perfil; mensagens já em trânsito não são canceladas. Envie MENU no teste para reiniciar a sessão depois de alterações.
+- A situação da linha comercial permanece inativa. O painel não registra números na Meta, não modifica WABA, IDs, credenciais, nem muda os vínculos confirmados das filiais. O perfil de teste ativo ainda depende de FORP_TEST_PROFILE e exige deploy para mudança. A chave WHATSAPP_AUTOMATION_ENABLED continua o interruptor global.
 
-`connect_profiles.settings` é um JSONB por número. A configuração é consultada durante o processamento, sem redeploy. Os valores omitidos usam os padrões de `src/profiles.js`. Campos: `days` (Mon, Tue, Wed, Thu, Fri, Sat, Sun), `start` e `end` (HH:MM, mesmo dia), `busy` (booleano), `messages` (objeto). Mensagens: directOpen, directClosed, menuOpen, menuClosed, selectedOpen, selectedClosed, busy, prompt, invalid. Variáveis de texto: `{unidade}`, `{horario}`. Máximo 700 caracteres por modelo. Alterações inválidas falham sem enviar uma resposta. O painel da Fase 6 será o meio normal de editar os dados; não há necessidade de SQL para instalar esta fase.
+O expediente padrão continua seg–sex, 08:00–17:00, fuso America/Sao_Paulo, sem feriados, até confirmação dos dias. Não armazena conteúdo livre de mensagens recebidas nem anexos. O painel não é uma caixa de entrada, nem distribui atendimento para funcionários.
 
-Exemplo opcional para administrador do banco, não executar se não quiser mudar o estado de espera:
+## Segurança
 
-```sql
-UPDATE connect_profiles SET settings=jsonb_set(settings,'{busy}','true'::jsonb,true) WHERE number_id='forp_02';
--- voltar ao padrão:
-UPDATE connect_profiles SET settings=jsonb_set(settings,'{busy}','false'::jsonb,true) WHERE number_id='forp_02';
-```
-
-## Validação
-
-GET /health: {"service":"40Hz Connect","status":"ok","phase":5,"database":"ok"}. Logs: database_migrated, server_started, automation_queued, automation_sent (branch e routeStatus=same_number na saudação direta/seleção), automation_send_failed e message_status. O estado interno não comprova entrega da Meta.
-
-Com perfil forp_02, envie MENU ao número de teste da Meta, confira as três unidades, selecione uma, confira a resposta e envie nova mensagem para verificar que não se repete. Troque o perfil para forp_01/03 e confirme a saudação direta. Se não houver evento real, verifique assinatura messages, inscrição WABA, token, destinatário e exigências do modo/publicação do app. Não adicione/migre os números comerciais nesta fase.
+Senha única para um administrador; API exige sessão assinada de oito horas, cookie HttpOnly/Secure/SameSite=Strict, proteção de mutações via cabeçalho customizado e sem CORS, limitação de oito tentativas de login por minuto por processo, CSP e dados sem cache. Senha e segredos ficam exclusivamente no servidor. Logout apaga o cookie do navegador; o token de sessão é stateless e, se copiado, só deixa de valer na expiração ou após troca da senha/chave secreta. Rotação de ADMIN_PASSWORD invalida sessões existentes. Use somente HTTPS; mantenha o painel restrito a administradores autorizados. Em produção multiusuário serão necessários controle individual de acessos, revogação de sessões e limites distribuídos. Edições concorrentes do mesmo perfil usam a última gravação, sem versionamento.
 
 ## Testes e limites
 
-21 testes locais passaram, 1 teste opcional de PostgreSQL real foi ignorado (TEST_DATABASE_URL ausente). Não foi possível validar banco real nem envio/entrega WhatsApp neste ambiente. O teste opcional exige banco descartável, jamais o banco da FORP. Os utilitários de roteamento da Fase 4 permanecem disponíveis e testados, mas o fluxo padrão da Fase 5 mantém as conversas no mesmo número. Não existe painel administrativo nem integração de produção nesta versão. Os números comerciais permanecem desativados. Produção exige autorização, credenciais e IDs dos números comerciais, permissões, avaliação da coexistência e teste de entrega. Não exclua os aplicativos WhatsApp Business existentes.
+`node --test`: 25 aprovados, 0 falhas, 1 teste opcional de PostgreSQL real ignorado (TEST_DATABASE_URL ausente). Testes HTTP e de banco simulado incluem autenticação, sessão expirada/adulterada, rejeição de requisições sem cabeçalho, limite de login, salvamento, isolamento de perfis, prévias e pausa. JavaScript verificado com `node --check`. A tentativa de teste visual automatizado no Chromium foi bloqueada pelo ambiente (`ERR_BLOCKED_BY_ADMINISTRATOR`). Não foi possível testar a interface real no navegador, banco real ou entrega real WhatsApp neste ambiente. O teste opcional exige banco descartável; nunca use o banco da FORP para ele.
+
+Após deploy, verifique /health, login no /admin, três perfis, prévia dentro/fora do expediente, salve uma edição e recarregue a página para conferir persistência. Confirme o fluxo de WhatsApp usando exclusivamente o número de teste; se a entrega ainda falhar, examine message_status e automation_send_failed nos logs. Nenhuma ativação comercial faz parte desta fase. A próxima fase é validação integrada, seguida de preparação da coexistência e implantação oficial.
