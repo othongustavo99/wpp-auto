@@ -1,18 +1,22 @@
 import { createServer } from 'node:http';
 import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { createAutomation, createMetaSender } from './automation.js';
+import { createMetaSender } from './automation.js';
+import { migrate, registerTest, createPersistentAutomation } from './persistence.js';
 
 const equal = (a,b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
 const safeCode = v => typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined;
 const maskId = v => typeof v === 'string' && v.length > 8 ? v.slice(-8) : undefined;
-export function createApp({ verifyToken, appSecret, automation, log = console.log }) {
+export function createApp({ verifyToken, appSecret, automation, databaseCheck, log = console.log }) {
   if (!verifyToken || !appSecret) throw new Error('Defina WHATSAPP_VERIFY_TOKEN e META_APP_SECRET');
   return createServer(async (req, res) => {
     const send = (code, text, type = 'text/plain; charset=utf-8') => { res.writeHead(code, {'Content-Type':type,'Cache-Control':'no-store'}); res.end(text); };
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) return send(200, JSON.stringify({service:'40Hz Connect',status:'ok',phase:2}), 'application/json');
+      if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) {
+        let db='not_configured';try{if(databaseCheck){await databaseCheck();db='ok';}}catch{db='unavailable';}
+        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:3,database:db}), 'application/json');
+      }
       if (url.pathname !== '/webhook') return send(404,'Not found');
       if (req.method === 'GET') {
         const challenge = url.searchParams.get('hub.challenge');
@@ -40,7 +44,7 @@ export function createApp({ verifyToken, appSecret, automation, log = console.lo
           }
           for(const msg of Array.isArray(value?.messages)?value.messages:[]) {
             log(JSON.stringify({event:'incoming_message',messageIdSuffix:maskId(msg?.id)}));
-            automation?.enqueue(entry?.id,value?.metadata,msg);
+            await automation?.enqueue(entry?.id,value?.metadata,msg);
           }
           if (!value?.statuses?.length && !value?.messages?.length) log(JSON.stringify({event:'messages_webhook_received'}));
         }
@@ -50,9 +54,25 @@ export function createApp({ verifyToken, appSecret, automation, log = console.lo
   });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const port=Number(process.env.PORT || 3000);
   const env=process.env;
-  const enabled=env.WHATSAPP_AUTOMATION_ENABLED==='true';
-  const automation=enabled ? createAutomation({phoneId:env.WHATSAPP_PHONE_NUMBER_ID,wabaId:env.WHATSAPP_BUSINESS_ACCOUNT_ID,testRecipients:(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean),send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo'}) : undefined;
-  createApp({verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation}).listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled})));
+  const port=Number(env.PORT||8080),enabled=env.WHATSAPP_AUTOMATION_ENABLED==='true';
+  async function start(){
+    if(!env.DATABASE_URL)throw new Error('DATABASE_URL required');
+    const {Pool}=await import('pg');
+    const pool=new Pool({connectionString:env.DATABASE_URL,max:5,connectionTimeoutMillis:5000,statement_timeout:5000});
+    pool.on('error',()=>console.error(JSON.stringify({event:'database_pool_error'})));
+    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:3}));
+    let automation;
+    if(enabled){
+      const phoneId=env.WHATSAPP_PHONE_NUMBER_ID,wabaId=env.WHATSAPP_BUSINESS_ACCOUNT_ID;
+      await registerTest(pool,{phoneId,wabaId});
+      automation=createPersistentAutomation({pool,phoneId,wabaId,testRecipients:(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean),secret:env.META_APP_SECRET,send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo'});
+    }
+    const server=createApp({verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation,databaseCheck:()=>pool.query('SELECT 1')});
+    const timer=automation?setInterval(()=>void automation.tick(),1000):undefined;
+    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:3})));
+    const stop=()=>{clearInterval(timer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
+    process.once('SIGTERM',stop);process.once('SIGINT',stop);
+  }
+  start().catch(()=>{console.error(JSON.stringify({event:'startup_failed',hint:'Check DATABASE_URL, pg installation, Meta variables and database permissions'}));process.exit(1);});
 }
