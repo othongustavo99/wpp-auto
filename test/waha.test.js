@@ -54,3 +54,32 @@ test('motor piloto WAHA enfileira com namespace separado e sem conteúdo livre',
  const lid='123456789012345@lid';let sent;const client=createWahaClient({...config,fetchImpl:async(url,opts)=>{if(url.endsWith('/sendText')){sent=JSON.parse(opts.body);return json({id:'out'});}return json(url.includes('/contacts/check-exists?')?{numberExists:true,chatId:lid}:{name:session,status:'WORKING',me:{id:expected+'@c.us'}});}});
  await client.send(session,to,{type:'text',text:{body:'Teste'}});assert.equal(sent.chatId,lid);
  });
+
+test('NOWEB: usa remoteJidAlt autenticado do remetente direto e responde no LID observado',async()=>{
+ const lid='123456789012345@lid';let sent;const calls=[];
+ const client=createWahaClient({...config,fetchImpl:async(url,opts)=>{calls.push(url);if(url.endsWith('/sendText')){sent=JSON.parse(opts.body);return json({id:'out'});}return json({name:session,status:'WORKING',me:{id:expected+'@c.us'}});}});
+ const p={...event.payload,from:lid,_data:{key:{remoteJid:lid,remoteJidAlt:to+'@s.whatsapp.net',fromMe:false}}};
+ assert.equal(await client.matchRecipient(lid,p),to);await client.send(session,to,{type:'text',text:{body:'Teste'}});assert.equal(sent.chatId,lid);assert.ok(!calls.some(u=>u.includes('/contacts/')));
+});
+test('NOWEB: consulta de LID reversa confirma telefone mesmo quando check-exists retorna c.us',async()=>{
+ const lid='123456789012345@lid';let sent;const client=createWahaClient({...config,fetchImpl:async(url,opts)=>{
+  if(url.endsWith('/sendText')){sent=JSON.parse(opts.body);return json({id:'out'});}if(url.endsWith('/lids/'+encodeURIComponent(lid)))return json({lid,pn:to+'@c.us'});
+  return json({name:session,status:'WORKING',me:{id:expected+'@c.us'}});
+ }});
+ assert.equal(await client.matchRecipient(lid),to);await client.send(session,to,{type:'text',text:{body:'Teste'}});assert.equal(sent.chatId,lid);
+});
+test('NOWEB: mapeamento direto PN para LID resolve mesmo quando consulta reversa indisponivel',async()=>{
+ const lid='123456789012345@lid';const client=createWahaClient({...config,fetchImpl:async(url)=>{
+  if(url.includes('/lids/pn/'))return json({lid,pn:to+'@c.us'});if(url.includes('/lids/'))return new Response('{}',{status:422});if(url.includes('/contacts/'))return json({numberExists:true,chatId:to+'@c.us'});throw Error('unexpected');
+ }});assert.equal(await client.matchRecipient(lid),to);
+});
+test('NOWEB: aliases de numero brasileiro sao aceitos somente quando WAHA confirma o endereco',async()=>{
+ const lid='123456789012345@lid',canonical='551199992222@c.us';let verified=true;
+ const client=createWahaClient({...config,fetchImpl:async(url)=>url.includes('/lids/')?json({lid,pn:null}):json({numberExists:verified,chatId:canonical})});
+ assert.equal(await client.matchRecipient(canonical),to);verified=false;assert.equal(await client.matchRecipient(canonical),null);
+});
+test('NOWEB: rejeita metadados inconsistentes, grupo, proprio numero e mapeamentos ausentes',async()=>{
+ const lid='123456789012345@lid';const client=createWahaClient({...config,fetchImpl:async()=>json({})});
+ for(const key of [{remoteJid:'99999999999@lid',remoteJidAlt:to+'@s.whatsapp.net',fromMe:false},{remoteJid:lid,remoteJidAlt:to+'@s.whatsapp.net',fromMe:true},{remoteJid:lid,remoteJidAlt:expected+'@s.whatsapp.net',fromMe:false},{remoteJid:lid,remoteJidAlt:to+'@s.whatsapp.net',fromMe:false,participant:'12345@c.us'}])assert.equal(await client.matchRecipient(lid,{from:lid,_data:{key}}),null);
+ assert.equal(await client.matchRecipient('123456789@g.us'),null);assert.equal(await client.matchRecipient(expected+'@c.us'),null);
+});
