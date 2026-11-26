@@ -1,61 +1,67 @@
-# 40Hz Connect — Fase 04 (v0.4.0)
+# 40Hz Connect — Fase 05 (v0.5.0)
 
-Atualização completa sobre o ZIP exato da Fase 3. Adiciona roteamento por unidade usando o vínculo `connect_branches.number_id` que já existia no PostgreSQL. Mantém o webhook, a fila persistente, a deduplicação, a janela de atendimento, a lista de unidades e a proteção por destinatários autorizados. Node.js 22+ e pg 8.16.3 (mesma dependência anterior).
+Atualização completa sobre o ZIP da Fase 4. A automação utiliza perfis por número, horários e mensagens personalizáveis, e a associação das cinco unidades confirmada pelo usuário. A comunicação real continua limitada ao número de teste da Meta e aos destinatários autorizados. Nenhum número comercial será ativado nesta versão.
 
 ## Atualizar
 
-Extraia sobre a raiz do repositório atual, substituindo os arquivos existentes. Não exclua `.git`, `.env`, o banco ou as variáveis. O ZIP não inclui `package-lock.json`: rode `npm install` para atualizar o lock da Fase 3 para a versão 0.4.0, depois `npm test`. Inclua o lock atualizado no Git.
+Extraia sobre a raiz atual do repositório, mantendo `.git`, `.env`, banco e variáveis. Faça backup antes de atualizar. Node 22+, mesma dependência `pg` 8.16.3; o ZIP não contém lockfile atualizado. Execute:
 
 ```powershell
 npm install
 npm test
 git add .
-git commit -m "Fase 04 - Direcionamento por unidade"
+git commit -m "Fase 05 - Perfis de atendimento FORP"
 git push
 ```
 
-Railway fará o deploy se estiver conectado ao repositório. Não é necessário recriar banco, domínio ou webhook. Antes do deploy em ambiente ativo, mantenha backup do banco e dos arquivos. Não execute testes de integração contra o banco do cliente.
+O Railway deve efetuar o deploy caso esteja ligado ao repositório. As migrações 001 e 002 são executadas automaticamente. A migração 002 insere três perfis e aplica uma única vez a associação confirmada, sem apagar conversas, registros ou credenciais. Sessões de teste antigas não serão reutilizadas: o hash passa a incluir o perfil simulado. Eventos pendentes sem perfil ou de perfil diferente serão expirados para evitar respostas incorretas durante a transição.
 
-## Variáveis
+## Números, perfis e variáveis
 
-Mantenha as 11 anteriores: PORT=8080, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION=v25.0, DATABASE_URL, TZ=America/Sao_Paulo, WHATSAPP_AUTOMATION_ENABLED=true, WHATSAPP_TEST_RECIPIENTS. Use somente números pessoais autorizados para teste, separados por vírgula. Renove token temporário se expirado. Não exponha segredos. O backend ainda usa apenas o número de teste, e os números FORP permanecem desativados para automação.
+| Perfil | WhatsApp comercial | Unidades |
+|---|---|---|
+| forp_01 | (11) 91462-2444 | Bragança Paulista |
+| forp_02 | (35) 98885-0459 | Monte Verde, Camanducaia, Cambuí |
+| forp_03 | (11) 99990-3346 | Joanópolis |
 
-Nova variável **opcional** `FORP_BRANCH_ROUTES`: JSON objeto com as chaves das unidades e valores `forp_01`, `forp_02`, `forp_03` ou `null`. Não crie a variável até confirmar os vínculos com a FORP. Ausente ou vazia preserva o banco. Se fornecida, é a configuração completa: unidades omitidas ou nulas ficam sem vínculo. `{}` remove todos os vínculos. Aplicação transacional na inicialização, sem alterar número, IDs Meta ou habilitação. JSON inválido interrompe a inicialização; corrija o valor e faça novo deploy.
+Mantenha as 11 variáveis anteriores: PORT=8080, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION=v25.0, DATABASE_URL, TZ=America/Sao_Paulo, WHATSAPP_AUTOMATION_ENABLED=true, WHATSAPP_TEST_RECIPIENTS. Renove o token temporário se estiver vencido. Não compartilhe segredos.
 
-| Identificador | Número comercial confirmado |
-|---|---|
-| forp_01 | (11) 91462-2444 |
-| forp_02 | (35) 98885-0459 |
-| forp_03 | (11) 99990-3346 |
-
-| Chave | Unidade |
-|---|---|
-| cambui | Cambuí |
-| camanducaia | Camanducaia |
-| monte_verde | Monte Verde |
-| joanopolis | Joanópolis |
-| braganca | Bragança Paulista |
-
-Exemplo de formato sem qualquer associação presumida:
+Se existir a variável `FORP_BRANCH_ROUTES` da Fase 4, substitua seu valor pelo JSON a seguir (ou remova a variável antes do primeiro deploy desta fase, para que a migração aplique os vínculos). Um valor antigo na variável sobrescreverá a migração em cada inicialização. Se quiser corrigir um deploy que já aplicou um mapa antigo, forneça o JSON abaixo e faça novo deploy.
 
 ```json
-{"cambui":null,"camanducaia":null,"monte_verde":null,"joanopolis":null,"braganca":null}
+{"cambui":"forp_02","camanducaia":"forp_02","monte_verde":"forp_02","joanopolis":"forp_03","braganca":"forp_01"}
 ```
 
-Depois de confirmar os responsáveis, substitua cada `null` pelo identificador correto entre aspas. Duas ou mais unidades podem compartilhar o mesmo número. Não confunda o vínculo com a ativação da automação no número comercial.
+`FORP_TEST_PROFILE` é uma variável opcional. Padrão `forp_02`. Altere para `forp_01` ou `forp_03` para testar as saudações diretas. A alteração exige novo deploy e todas as mensagens ainda são enviadas pelo número de teste da Meta. Aguarde a fila terminar antes de trocar o perfil e envie MENU para reiniciar. Nenhum link leva aos números comerciais nos fluxos normais desta fase.
 
-## Fluxo
+## Fluxos
 
-O número de teste recebe mensagem de destinatário autorizado, apresenta lista das cinco unidades e, após seleção, consulta o PostgreSQL. Se houver destino válido, responde **ao destinatário de teste** com link `https://wa.me/` e texto pré-preenchido mencionando a unidade. O cliente precisa abrir o link e enviar a mensagem; não há transferência de histórico, envio automático ao telefone da filial nem distribuição interna de conversas. O link leva a um WhatsApp real da FORP se o vínculo for configurado: não envie a mensagem de teste à equipe sem autorização. Sem destino, informa explicitamente que o direcionamento não está configurado. A sessão para de responder até `MENU` ou expiração. Horários: segunda a sexta, 8–17h, sem feriados, dias provisórios. O texto fora do expediente indica o horário; não presume disponibilidade humana. Nenhum conteúdo médico é solicitado.
+- 2444: saudação Bragança Paulista, dentro ou fora do expediente; segue para atendimento humano na mesma conversa.
+- 3346: saudação Joanópolis, dentro ou fora do expediente; segue para atendimento humano na mesma conversa.
+- 0459: lista interativa Monte Verde, Camanducaia, Cambuí; resposta identifica a unidade escolhida, sem redirecionamento para outro número. Pode escolher pelo menu, nome ou 1/2/3. Uma opção de outra unidade é rejeitada. A seleção fica na sessão persistida; não há ainda distribuição automática entre funcionários.
+- Em todos os perfis, depois da saudação direta ou da seleção, a automação não responde repetidamente. MENU reinicia o fluxo. Sessão expira 24 h após a última resposta automatizada.
+- Expediente padrão segunda a sexta, 08:00 a 17:00, fuso America/Sao_Paulo, sem calendário de feriados. Dias úteis são uma hipótese anterior, ainda a confirmar.
+- O modo de espera por equipe ocupada é uma configuração manual (`busy`), desligada por padrão. Mesmo desligado, a saudação informa que a equipe dará continuidade assim que possível. Não há detecção real de ocupação ou fila humana. O painel da próxima fase deverá expor essa configuração.
+- Não solicita dados médicos. Não armazena texto livre ou anexos; somente intenções reconhecidas, identificadores derivados por HMAC e destinatário temporário da fila.
 
-## Verificação
+## Personalização (estrutura para o painel futuro)
 
-GET /health: {"service":"40Hz Connect","status":"ok","phase":4,"database":"ok"}. Logs: `database_migrated`, `server_started`, `branch_routes_configured` (somente com variável de mapa fornecida), `automation_queued`, `automation_sent` com `branch` e `routeStatus` (`link_offered` ou `unassigned`) ao selecionar unidade. `automation_send_failed` informa códigos de erro Meta; `message_status` registra eventos de entrega. `link_offered` não significa que cliente clicou, nem entrega confirmada.
+`connect_profiles.settings` é um JSONB por número. A configuração é consultada durante o processamento, sem redeploy. Os valores omitidos usam os padrões de `src/profiles.js`. Campos: `days` (Mon, Tue, Wed, Thu, Fri, Sat, Sun), `start` e `end` (HH:MM, mesmo dia), `busy` (booleano), `messages` (objeto). Mensagens: directOpen, directClosed, menuOpen, menuClosed, selectedOpen, selectedClosed, busy, prompt, invalid. Variáveis de texto: `{unidade}`, `{horario}`. Máximo 700 caracteres por modelo. Alterações inválidas falham sem enviar uma resposta. O painel da Fase 6 será o meio normal de editar os dados; não há necessidade de SQL para instalar esta fase.
 
-Teste primeiro sem mapa: envie MENU no número de teste, selecione uma unidade e confira que não há encaminhamento incorreto. Após confirmar o mapa, configure a variável, reinicie o deploy, envie MENU e selecione cada unidade, confira o destino do link e o texto preenchido sem enviar mensagem real não autorizada. Se a API não entregar ou o webhook não receber evento real, confira assinatura do campo messages, inscrição WABA, requisitos de publicação, destinatário permitido e validade do token.
+Exemplo opcional para administrador do banco, não executar se não quiser mudar o estado de espera:
+
+```sql
+UPDATE connect_profiles SET settings=jsonb_set(settings,'{busy}','true'::jsonb,true) WHERE number_id='forp_02';
+-- voltar ao padrão:
+UPDATE connect_profiles SET settings=jsonb_set(settings,'{busy}','false'::jsonb,true) WHERE number_id='forp_02';
+```
+
+## Validação
+
+GET /health: {"service":"40Hz Connect","status":"ok","phase":5,"database":"ok"}. Logs: database_migrated, server_started, automation_queued, automation_sent (branch e routeStatus=same_number na saudação direta/seleção), automation_send_failed e message_status. O estado interno não comprova entrega da Meta.
+
+Com perfil forp_02, envie MENU ao número de teste da Meta, confira as três unidades, selecione uma, confira a resposta e envie nova mensagem para verificar que não se repete. Troque o perfil para forp_01/03 e confirme a saudação direta. Se não houver evento real, verifique assinatura messages, inscrição WABA, token, destinatário e exigências do modo/publicação do app. Não adicione/migre os números comerciais nesta fase.
 
 ## Testes e limites
 
-`npm test` cobre roteamento, validação do mapa, transação e rollback com mocks, links das cinco unidades, ausência de vínculo, envio somente ao destinatário de teste, segurança do webhook e persistência simulada. Teste real PostgreSQL opcional com `TEST_DATABASE_URL` apontando para banco vazio e descartável. Neste ambiente não houve conexão real ao PostgreSQL nem envio ao WhatsApp. O ZIP não inclui lockfile atualizado. A instalação da dependência pg deve ocorrer no ambiente do usuário. Não há painel administrativo, fila humana real, detecção de atendente ocupado nem automação ativa nos três números. A integração de produção depende da autorização da FORP, configuração de contas e IDs Meta, tokens, permissões, requisitos de coexistência e validação de entrega. Não migre nem exclua os WhatsApps Business existentes.
-
-A Fase 3 mantém seus limites: eventos recebidos persistidos antes de HTTP 200, deduplicação por HMAC, mensagens ambíguas/timeout não são reenviadas automaticamente, sessões expiram e eventos finalizados são limpos. O backend não guarda conteúdo livre nem anexos; destinatário fica temporariamente na fila. Rotação de META_APP_SECRET altera hashes anteriores. Use uma réplica no piloto. Não confunda status interno da fila com entrega ao cliente.
+21 testes locais passaram, 1 teste opcional de PostgreSQL real foi ignorado (TEST_DATABASE_URL ausente). Não foi possível validar banco real nem envio/entrega WhatsApp neste ambiente. O teste opcional exige banco descartável, jamais o banco da FORP. Os utilitários de roteamento da Fase 4 permanecem disponíveis e testados, mas o fluxo padrão da Fase 5 mantém as conversas no mesmo número. Não existe painel administrativo nem integração de produção nesta versão. Os números comerciais permanecem desativados. Produção exige autorização, credenciais e IDs dos números comerciais, permissões, avaliação da coexistência e teste de entrega. Não exclua os aplicativos WhatsApp Business existentes.

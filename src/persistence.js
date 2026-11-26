@@ -1,15 +1,15 @@
 import {readFile} from 'node:fs/promises';
 import {createHmac} from 'node:crypto';
-import {branches,decide,isOpen} from './automation.js';
-import {lookupRoute,routeSelection} from './routing.js';
+import {branches} from './automation.js';
+import {loadProfile,decideProfile,profileOpen,profileIds} from './profiles.js';
 const DAY=86400000;
 const normalize=s=>String(s??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
 // Store only commands recognized by the bot; never store free text or attachments.
 export function sanitizeIntent(msg){
   if(msg.type==='text'){
     const typed=normalize(msg.text?.body);
-    const branch=branches.find((b,i)=>typed===String(i+1)||typed===normalize(b.name));
-    return {type:'text',text:{body:typed==='menu'?'menu':branch?branch.name:''}};
+    const branch=branches.find(b=>typed===normalize(b.name));
+    return {type:'text',text:{body:typed==='menu'?'menu':branch?branch.name:/^[1-5]$/.test(typed)?typed:''}};
   }
   if(msg.type==='interactive'){
     const id=msg.interactive?.type==='list_reply'?msg.interactive.list_reply?.id:'';
@@ -20,7 +20,7 @@ export function sanitizeIntent(msg){
 export async function migrate(pool){
   const c=await pool.connect();
   try{await c.query('BEGIN');await c.query('SELECT pg_advisory_xact_lock(40400301)');
-    await c.query(await readFile(new URL('../migrations/001_core.sql',import.meta.url),'utf8'));await c.query('COMMIT');
+    await c.query(await readFile(new URL('../migrations/001_core.sql',import.meta.url),'utf8'));await c.query(await readFile(new URL('../migrations/002_profiles.sql',import.meta.url),'utf8'));await c.query('COMMIT');
   }catch(e){await c.query('ROLLBACK').catch(()=>{});throw e;}finally{c.release();}
 }
 export async function registerTest(pool,{phoneId,wabaId}){
@@ -28,8 +28,8 @@ export async function registerTest(pool,{phoneId,wabaId}){
   await pool.query(`INSERT INTO connect_numbers(id,label,phone_id,waba_id,enabled,is_test) VALUES ('meta_test','Meta teste',$1,$2,true,true)
     ON CONFLICT(id) DO UPDATE SET phone_id=EXCLUDED.phone_id,waba_id=EXCLUDED.waba_id,enabled=true,is_test=true`,[phoneId,wabaId]);
 }
-export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,send,secret,log=console.log,now=Date.now,tz='America/Sao_Paulo'}){
-  if(!/^\d+$/.test(phoneId??'')||!/^\d+$/.test(wabaId??'')||!testRecipients?.length||!testRecipients.every(x=>/^\d{8,15}$/.test(x))||!secret)throw new Error('Configuracao de teste invalida');
+export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,send,secret,log=console.log,now=Date.now,tz='America/Sao_Paulo',testProfile='forp_02'}){
+  if(!/^\d+$/.test(phoneId??'')||!/^\d+$/.test(wabaId??'')||!testRecipients?.length||!testRecipients.every(x=>/^\d{8,15}$/.test(x))||!secret||!profileIds.includes(testProfile))throw new Error('Configuracao de teste invalida');
   new Intl.DateTimeFormat('en-US',{timeZone:tz});
   const allowed=new Set(testRecipients), hash=s=>createHmac('sha256',secret).update(s).digest('hex');
   const emit=(event,extra={})=>log(JSON.stringify({event,...extra}));
@@ -39,7 +39,7 @@ export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,s
     if(!Number.isFinite(stamp)||stamp<=0||t-stamp>=DAY||stamp-t>300000)return false;
     const r=await pool.query(`INSERT INTO connect_events(number_id,message_hash,contact_hash,recipient,intent,occurred_at)
       SELECT id,$3,$4,$5,$6::jsonb,$7 FROM connect_numbers WHERE phone_id=$1 AND waba_id=$2 AND enabled AND is_test
-      ON CONFLICT DO NOTHING`,[phoneId,wabaId,hash(msg.id),hash(`${phoneId}:${msg.from}`),msg.from,JSON.stringify(sanitizeIntent(msg)),new Date(stamp)]);
+      ON CONFLICT DO NOTHING`,[phoneId,wabaId,hash(msg.id),hash(`${phoneId}:${testProfile}:${msg.from}`),msg.from,JSON.stringify({...sanitizeIntent(msg),testProfile}),new Date(stamp)]);
     if(r.rowCount)emit('automation_queued');return r.rowCount>0;
   }
   // A session-level advisory lock serializes workers across replicas. Claim is committed BEFORE any API send.
@@ -59,10 +59,11 @@ export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,s
       const args=[job.number_id,job.message_hash];
       const finish=async status=>c.query('UPDATE connect_events SET status=$3,recipient=NULL,intent=NULL,finished_at=now() WHERE number_id=$1 AND message_hash=$2',[...args,status]);
       if(!allowed.has(job.recipient)||now()-new Date(job.occurred_at).getTime()>=DAY){await finish('expired');return;}
+      if(job.intent?.testProfile!==testProfile){await finish('expired');return;}
       const state=(await c.query('SELECT state,branch_id FROM connect_sessions WHERE number_id=$1 AND contact_hash=$2 AND expires_at>now()',[job.number_id,job.contact_hash])).rows[0];
-      const open=isOpen(new Date(now()),tz);
-      let plan=decide(job.intent,state?.state,open);
-      if(plan?.branch)plan=routeSelection(plan,await lookupRoute(c,plan.branch),open);
+      const profile=await loadProfile(c,testProfile);
+      const open=profileOpen(new Date(now()),profile.settings,tz);
+      const plan=decideProfile(job.intent,state?.state,profile,open);
       if(!plan){await finish('done');return;}
       let out;
       try{out=await send(phoneId,job.recipient,plan.payload);}catch(e){await finish(e.httpStatus?'failed':'uncertain');emit('automation_send_failed',{httpStatus:e.httpStatus,metaCode:e.metaCode,metaSubcode:e.metaSubcode});return;}

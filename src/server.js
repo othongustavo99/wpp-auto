@@ -16,7 +16,7 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, l
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) {
         let db='not_configured';try{if(databaseCheck){await databaseCheck();db='ok';}}catch{db='unavailable';}
-        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:4,database:db}), 'application/json');
+        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:5,database:db}), 'application/json');
       }
       if (url.pathname !== '/webhook') return send(404,'Not found');
       if (req.method === 'GET') {
@@ -63,18 +63,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const {Pool}=await import('pg');
     const pool=new Pool({connectionString:env.DATABASE_URL,max:5,connectionTimeoutMillis:5000,statement_timeout:5000});
     pool.on('error',()=>console.error(JSON.stringify({event:'database_pool_error'})));
-    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:4}));
+    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:5}));
     const configured=await applyRoutes(pool,routes);
     if(configured!==null)console.log(JSON.stringify({event:'branch_routes_configured',configured,total:5}));
     let automation;
     if(enabled){
       const phoneId=env.WHATSAPP_PHONE_NUMBER_ID,wabaId=env.WHATSAPP_BUSINESS_ACCOUNT_ID;
       await registerTest(pool,{phoneId,wabaId});
-      automation=createPersistentAutomation({pool,phoneId,wabaId,testRecipients:(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean),secret:env.META_APP_SECRET,send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo'});
+      automation=createPersistentAutomation({pool,phoneId,wabaId,testRecipients:(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean),secret:env.META_APP_SECRET,send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo',testProfile:env.FORP_TEST_PROFILE||'forp_02'});
     }
     const server=createApp({verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation,databaseCheck:()=>pool.query('SELECT 1')});
     const timer=automation?setInterval(()=>void automation.tick(),1000):undefined;
-    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:4})));
+    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:5})));
     const stop=()=>{clearInterval(timer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
     process.once('SIGTERM',stop);process.once('SIGINT',stop);
   }

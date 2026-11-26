@@ -26,28 +26,28 @@ test('fila persistente: aceita somente origem e destinatário permitidos; hashes
 });
 test('worker confirma envio e estado em uma transação; libera lock',async()=>{
  const queries=[],sent=[];let release;
- const c={query:async(sql,args)=>{queries.push([sql,args]);if(sql.includes('pg_try_advisory_lock'))return {rows:[{locked:true}]};if(sql.includes('RETURNING e.*'))return {rows:[{number_id:'meta_test',message_hash:'mh',contact_hash:'ch',recipient,intent:{type:'text',text:{body:'Cambuí'}},occurred_at:new Date(stamp)}]};if(sql.startsWith('SELECT state'))return {rows:[{state:'menu'}]};return {rows:[]};},release:x=>{release=x}};
+ const c={query:async(sql,args)=>{queries.push([sql,args]);if(sql.includes('pg_try_advisory_lock'))return {rows:[{locked:true}]};if(sql.includes('RETURNING e.*'))return {rows:[{number_id:'meta_test',message_hash:'mh',contact_hash:'ch',recipient,intent:{type:'text',text:{body:'Cambuí'},testProfile:'forp_02'},occurred_at:new Date(stamp)}]};if(sql.startsWith('SELECT state'))return {rows:[{state:'menu'}]};if(sql.includes('FROM connect_profiles'))return {rows:[{branch_ids:['cambui','camanducaia','monte_verde'],settings:{}}]};return {rows:[]};},release:x=>{release=x}};
  const a=createPersistentAutomation({pool:{connect:async()=>c},phoneId:'123',wabaId:'456',testRecipients:[recipient],secret:'test',now:()=>stamp,send:async(...args)=>{sent.push(args);return 'wamid.test12345'},log:()=>{}});
  await a.tick();assert.equal(sent.length,1);assert.match(sent[0][2].text.body,/Cambuí/);
  assert.ok(queries.some(([q,v])=>q.includes('INSERT INTO connect_sessions')&&v[3]==='cambui'));
  assert.ok(queries.some(([q])=>q==='COMMIT'));assert.ok(queries.some(([q])=>q.includes('pg_advisory_unlock')));assert.equal(release,false);
 });
-test('worker consulta rota persistida e envia link apenas ao destinatario de teste',async()=>{
+test('worker consulta perfil persistido e mantém conversa no numero de teste',async()=>{
  const sent=[],queries=[];
- const c={query:async(sql,args)=>{queries.push([sql,args]);if(sql.includes('pg_try_advisory_lock'))return {rows:[{locked:true}]};if(sql.includes('RETURNING e.*'))return {rows:[{number_id:'meta_test',message_hash:'mh',contact_hash:'ch',recipient,intent:{type:'text',text:{body:'Cambuí'}},occurred_at:new Date(stamp)}]};if(sql.startsWith('SELECT state'))return {rows:[{state:'menu'}]};if(sql.includes('JOIN connect_numbers n ON n.id=b.number_id'))return {rows:[{id:'forp_02',display_number:'5535988850459'}]};return {rows:[]};},release:()=>{}};
+ const c={query:async(sql,args)=>{queries.push([sql,args]);if(sql.includes('pg_try_advisory_lock'))return {rows:[{locked:true}]};if(sql.includes('RETURNING e.*'))return {rows:[{number_id:'meta_test',message_hash:'mh',contact_hash:'ch',recipient,intent:{type:'text',text:{body:'Cambuí'},testProfile:'forp_02'},occurred_at:new Date(stamp)}]};if(sql.startsWith('SELECT state'))return {rows:[{state:'menu'}]};if(sql.includes('FROM connect_profiles'))return {rows:[{branch_ids:['cambui','camanducaia','monte_verde'],settings:{}}]};if(sql.includes('JOIN connect_numbers n ON n.id=b.number_id'))return {rows:[{id:'forp_02',display_number:'5535988850459'}]};return {rows:[]};},release:()=>{}};
  const a=createPersistentAutomation({pool:{connect:async()=>c},phoneId:'123',wabaId:'456',testRecipients:[recipient],secret:'test',now:()=>stamp,send:async(...args)=>{sent.push(args);return 'wamid.test12345'},log:()=>{}});
- await a.tick();assert.equal(sent.length,1);assert.equal(sent[0][0],'123');assert.equal(sent[0][1],recipient);assert.match(sent[0][2].text.body,/https:\/\/wa.me\/5535988850459/);assert.ok(queries.some(([q,v])=>q.includes('INSERT INTO connect_sessions')&&v[3]==='cambui'));
+ await a.tick();assert.equal(sent.length,1);assert.equal(sent[0][0],'123');assert.equal(sent[0][1],recipient);assert.match(sent[0][2].text.body,/Cambuí/);assert.doesNotMatch(sent[0][2].text.body,/wa\.me/);assert.ok(queries.some(([q,v])=>q.includes('INSERT INTO connect_sessions')&&v[3]==='cambui'));
 });
 test('health confirma banco ou retorna 503',async()=>{
  let fail=false;const s=createApp({verifyToken:'x',appSecret:'y',databaseCheck:async()=>{if(fail)throw Error('db')}});
- await new Promise(r=>s.listen(0,'127.0.0.1',r));try{const url=`http://127.0.0.1:${s.address().port}/health`;const ok=await fetch(url);assert.deepEqual(await ok.json(),{service:'40Hz Connect',status:'ok',phase:4,database:'ok'});fail=true;assert.equal((await fetch(url)).status,503);}finally{await new Promise(r=>s.close(r));}
+ await new Promise(r=>s.listen(0,'127.0.0.1',r));try{const url=`http://127.0.0.1:${s.address().port}/health`;const ok=await fetch(url);assert.deepEqual(await ok.json(),{service:'40Hz Connect',status:'ok',phase:5,database:'ok'});fail=true;assert.equal((await fetch(url)).status,503);}finally{await new Promise(r=>s.close(r));}
 });
 // Opt-in only, disposable test database. Never run against the client's production database.
 test('PostgreSQL real: migration, dedup, persistent session and cleanup',{skip:!process.env.TEST_DATABASE_URL},async()=>{
  const {Pool}=await import('pg');const pool=new Pool({connectionString:process.env.TEST_DATABASE_URL});const sent=[];
- try{await migrate(pool);await registerTest(pool,{phoneId:'123',wabaId:'456'});await applyRoutes(pool,{cambui:'forp_02'});const now=Date.now();const opts={pool,phoneId:'123',wabaId:'456',testRecipients:[recipient],secret:'integration-test',now:()=>now,send:async(...args)=>{sent.push(args);return 'wamid.integration'},log:()=>{}};
+ try{await migrate(pool);await registerTest(pool,{phoneId:'123',wabaId:'456'});await applyRoutes(pool,{cambui:'forp_02',camanducaia:'forp_02',monte_verde:'forp_02',joanopolis:'forp_03',braganca:'forp_01'});const now=Date.now();const opts={pool,phoneId:'123',wabaId:'456',testRecipients:[recipient],secret:'integration-test',now:()=>now,send:async(...args)=>{sent.push(args);return 'wamid.integration'},log:()=>{}};
  const a=createPersistentAutomation(opts);const id=`integration-${now}`;const m=message({id,timestamp:String(Math.floor(now/1000))});assert.equal(await a.enqueue('456',{phone_number_id:'123'},m),true);assert.equal(await a.enqueue('456',{phone_number_id:'123'},m),false);await a.tick();assert.equal(sent.length,1);
- const b=createPersistentAutomation(opts);await b.enqueue('456',{phone_number_id:'123'},message({id:id+'2',timestamp:m.timestamp,text:{body:'Cambuí'}}));await b.tick();assert.equal(sent.length,2);assert.match(sent[1][2].text.body,/Cambuí/);assert.match(sent[1][2].text.body,/https:\/\/wa.me\/5535988850459/);
+ const b=createPersistentAutomation(opts);await b.enqueue('456',{phone_number_id:'123'},message({id:id+'2',timestamp:m.timestamp,text:{body:'Cambuí'}}));await b.tick();assert.equal(sent.length,2);assert.match(sent[1][2].text.body,/Cambuí/);assert.doesNotMatch(sent[1][2].text.body,/wa\.me/);
  assert.equal((await pool.query("SELECT count(*)::int AS n FROM connect_numbers WHERE enabled=false AND id LIKE 'forp_%'")).rows[0].n,3);
  }finally{await pool.end();}
 });
