@@ -1,13 +1,27 @@
-# 40Hz Connect — Fase 1
-Servidor de diagnóstico de webhook WhatsApp Cloud API. Node.js 22+, sem dependências externas. Não é ainda o chatbot e não envia mensagens automaticamente. Não armazena conversas ou dados de pacientes. Logs registram apenas eventos, sufixo do identificador da mensagem e códigos de falha.
+# 40Hz Connect — Fase 02 (v0.2.0)
 
-## Local
-`npm ci` e `npm test`. Para executar, copie `.env.example` para `.env`, preencha as duas chaves e rode `npm start`. Nunca faça commit de `.env`.
+Backend Node.js 22, sem dependências externas. Mantém o webhook da Fase 1 e acrescenta o motor de automação de demonstração, limitado a uma conta e número de teste e destinatários explicitamente autorizados.
+
+## Atualização
+
+Extraia este ZIP sobre a raiz do repositório atual (onde fica package.json). Substitua os arquivos de mesmo nome. Não exclua .git, .env ou variáveis do Railway. Não há arquivos a excluir. Execute `npm ci` e `npm test`. Depois `git add .`, `git commit -m "Fase 02 - Motor de automacao"` e `git push`.
 
 ## Railway
-Suba o conteúdo desta pasta na raiz de um repo privado. Crie um serviço a partir do repo no Railway. Em Variables, defina `WHATSAPP_VERIFY_TOKEN` (gere uma chave aleatória, por exemplo `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`) e `META_APP_SECRET` (Meta Developers > Configurações do app > Básico > Chave secreta do app). Aplique as alterações. O start command é `npm start`. Gere o domínio público em Settings > Networking e abra `https://SEU-DOMINIO/health`.
 
-## Meta
-Na configuração do WhatsApp, use callback `https://SEU-DOMINIO/webhook` e o mesmo `WHATSAPP_VERIFY_TOKEN`. Verifique e salve. Assine o campo `messages` do objeto `whatsapp_business_account`. Teste pelo painel. Caso necessário, confira se o app está inscrito na WABA de teste (`GET /{WABA_ID}/subscribed_apps` com token autorizado; `POST` para inscrever, quando necessário). A Meta pode exigir publicação para eventos reais, conforme aviso do painel. Não publique ou migre números sem revisar os requisitos. Veja logs do Railway e procure `webhook_verified`, `message_status` e `incoming_message`.
+Mantenha PORT=8080, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, WHATSAPP_ACCESS_TOKEN (renove caso expirado/exposto), WHATSAPP_PHONE_NUMBER_ID, WHATSAPP_BUSINESS_ACCOUNT_ID, META_GRAPH_API_VERSION=v25.0 e TZ=America/Sao_Paulo. DATABASE_URL fica reservada para a Fase 3. Adicione WHATSAPP_TEST_RECIPIENTS com seu número de teste cadastrado e autorizado pela Meta, somente dígitos internacionais, sem +, espaços ou hífen (vários separados por vírgula; use o wa_id real do destinatário se a Meta normalizar o número). Adicione WHATSAPP_AUTOMATION_ENABLED=true somente depois de publicar esta versão. Para desligar, defina false e redeploy. Nunca adicione números de clientes à lista de teste.
 
-A fase não precisa do access token de envio. Revogue o token exposto anteriormente e use outro nos testes de envio. Não compartilhe chaves em screenshots. Logs não são armazenamento durável, e mensagens podem gerar eventos repetidos; deduplicação persistente e automação serão fases posteriores.
+GET /health deve retornar phase:2. Mantenha o callback HTTPS /webhook e seu token; não é necessário recriar. Confirme assinatura messages e inscrição da aplicação na WABA de teste. O aviso da Meta sobre app não publicado significa que eventos reais podem não chegar até a publicação; cumpra os requisitos do painel se necessário. Teste sintético do painel não é uma mensagem real; a automação filtra IDs, remetentes e horário do evento para evitar responder a exemplos fictícios. Não altere a conta/números oficiais para resolver testes.
+
+## Teste real
+
+Abra a conversa com o número de teste da Meta e envie Olá. Se a Meta entregar o evento ao backend, ele responderá com lista de cinco unidades. Escolha uma unidade; receberá uma confirmação e o bot deixa de responder a mensagens comuns naquela sessão. Digite MENU para reabrir. Aceita também 1 a 5 ou nome da unidade após abrir o menu. Horário padrão de segunda a sexta 08:00 inclusive até 17:00 exclusive, fuso America/Sao_Paulo. Dias úteis são uma hipótese ainda a validar; feriados não são tratados. Mensagens são enviadas somente em resposta a evento recente do usuário (janela de 24 h); não há envio espontâneo.
+
+Logs: incoming_message (evento recebido, inclusive sintético), automation_sent (API aceitou resposta, não confirma entrega), automation_send_failed (HTTP e código Meta, se disponíveis), message_status (sent/delivered/read/failed). Não expõe tokens ou conteúdo de conversas nos logs. Se não houver evento real, verifique inscrição WABA, assinatura messages e publicação/restrições Meta. Se houver evento real mas nenhum envio, confira os IDs e wa_id permitido, validade do token e flag. Se accepted mas não chegar, procure status failed e código no log. A API real não foi acessada nos testes locais.
+
+## Escopo e limitações
+
+Fase 2 é um protótipo de teste, não produção. Deduplicação (7 dias, até 10 mil entradas), estado de conversa (24h a partir da última resposta automática) e fila limitada ficam em memória de uma única instância; reinícios, múltiplas réplicas ou estouro de limite podem perder eventos/estado. Sem reenvio automático após erro/timeout para reduzir duplicidade; não é garantia de entrega exatamente uma vez. Não há integração PostgreSQL, painel, fila humana real, detecção de equipe ocupada, transferência ou redirecionamento por link nesta fase. O texto de confirmação não significa que um atendente recebeu uma fila. Próxima fase: persistência, roteamento por número/filial, configurações e atendimento humano. Não solicitar dados médicos.
+
+Unidades confirmadas: Cambuí, Camanducaia, Monte Verde, Joanópolis e Bragança Paulista. Números FORP confirmados (todos Business): (11) 91462-2444, (35) 98885-0459, (11) 99990-3346. Não ativados nem associados a filiais no código; mapeamento ainda pendente. Verificar coexistência, autorização e propriedade empresarial antes de integrar.
+
+Documentação: https://developers.facebook.com/documentation/business-messaging/whatsapp/overview/

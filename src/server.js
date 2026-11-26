@@ -1,17 +1,18 @@
 import { createServer } from 'node:http';
 import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { createAutomation, createMetaSender } from './automation.js';
 
 const equal = (a,b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
 const safeCode = v => typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined;
 const maskId = v => typeof v === 'string' && v.length > 8 ? v.slice(-8) : undefined;
-export function createApp({ verifyToken, appSecret, log = console.log }) {
+export function createApp({ verifyToken, appSecret, automation, log = console.log }) {
   if (!verifyToken || !appSecret) throw new Error('Defina WHATSAPP_VERIFY_TOKEN e META_APP_SECRET');
   return createServer(async (req, res) => {
     const send = (code, text, type = 'text/plain; charset=utf-8') => { res.writeHead(code, {'Content-Type':type,'Cache-Control':'no-store'}); res.end(text); };
     try {
       const url = new URL(req.url, 'http://localhost');
-      if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) return send(200, JSON.stringify({service:'40Hz Connect',status:'ok',phase:1}), 'application/json');
+      if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) return send(200, JSON.stringify({service:'40Hz Connect',status:'ok',phase:2}), 'application/json');
       if (url.pathname !== '/webhook') return send(404,'Not found');
       if (req.method === 'GET') {
         const challenge = url.searchParams.get('hub.challenge');
@@ -39,6 +40,7 @@ export function createApp({ verifyToken, appSecret, log = console.log }) {
           }
           for(const msg of Array.isArray(value?.messages)?value.messages:[]) {
             log(JSON.stringify({event:'incoming_message',messageIdSuffix:maskId(msg?.id)}));
+            automation?.enqueue(entry?.id,value?.metadata,msg);
           }
           if (!value?.statuses?.length && !value?.messages?.length) log(JSON.stringify({event:'messages_webhook_received'}));
         }
@@ -49,5 +51,8 @@ export function createApp({ verifyToken, appSecret, log = console.log }) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port=Number(process.env.PORT || 3000);
-  createApp({verifyToken:process.env.WHATSAPP_VERIFY_TOKEN,appSecret:process.env.META_APP_SECRET}).listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port})));
+  const env=process.env;
+  const enabled=env.WHATSAPP_AUTOMATION_ENABLED==='true';
+  const automation=enabled ? createAutomation({phoneId:env.WHATSAPP_PHONE_NUMBER_ID,wabaId:env.WHATSAPP_BUSINESS_ACCOUNT_ID,testRecipients:(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean),send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo'}) : undefined;
+  createApp({verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation}).listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled})));
 }
