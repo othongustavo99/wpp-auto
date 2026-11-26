@@ -10,7 +10,7 @@ async function readJson(req){
  let size=0;const chunks=[];for await(const chunk of req){size+=chunk.length;if(size>32768)throw Object.assign(Error('Corpo muito grande'),{status:413});chunks.push(chunk);}
  try{return JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw Object.assign(Error('JSON inválido'),{status:400});}
 }
-export function createAdmin({pool,diagnostics,password,appSecret,enabled=false,testProfile='forp_02',now=Date.now,log=console.log}){
+export function createAdmin({pool,diagnostics,commercial,password,appSecret,enabled=false,testProfile='forp_02',now=Date.now,log=console.log}){
  if(typeof password!=='string'||password.length<24||password.length>256||!appSecret)throw Error('ADMIN_PASSWORD deve ter 24 a 256 caracteres');
  const key=createHmac('sha256',appSecret).update('admin-v1:'+password).digest();
  const sign=s=>createHmac('sha256',key).update(s).digest('hex');
@@ -35,9 +35,12 @@ export function createAdmin({pool,diagnostics,password,appSecret,enabled=false,t
    if(!diagnostics)return send(503,{error:'Diagnóstico indisponível'});
    return send(200,await diagnostics.report());
   }
+  if(path==='/admin/api/commercial'&&req.method==='GET'){
+   const states=commercial?.states??{};const lines=await Promise.all(profileIds.map(async id=>({id,mode:states[id]||'off',diagnostics:commercial?.diagnostics[id]?await commercial.diagnostics[id].report():null})));return send(200,{lines});
+  }
   if(path==='/admin/api/profiles'&&req.method==='GET'){
-   const profiles=await Promise.all(profileIds.map(async id=>{const p=await loadProfile(pool,id);return {...p,commercialActive:false};}));
-   return send(200,{profiles,automationEnabled:enabled,testProfile,environment:'test'});
+   const profiles=await Promise.all(profileIds.map(async id=>{const p=await loadProfile(pool,id);return {...p,commercialActive:['pilot','live'].includes(commercial?.states[id]),commercialMode:commercial?.states[id]||'off'};}));
+   return send(200,{profiles,automationEnabled:enabled,testProfile,environment:Object.values(commercial?.states??{}).some(x=>x==='pilot'||x==='live')?'commercial':'test'});
   }
   const match=/^\/admin\/api\/profiles\/(forp_0[123])(?:\/(preview))?$/.exec(path);
   if(!match)return send(404,{error:'Não encontrado'});

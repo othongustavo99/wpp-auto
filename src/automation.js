@@ -33,7 +33,7 @@ export function createMetaSender({token,version='v25.0',fetchImpl=fetch}) {
   if(!token || !/^v\d+\.\d+$/.test(version)) throw new Error('Credenciais API inválidas');
   return async (phoneId,to,payload)=>{
     const response=await fetchImpl(`https://graph.facebook.com/${version}/${phoneId}/messages`,{
-      method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
+      method:'POST',redirect:'error',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},
       body:JSON.stringify({messaging_product:'whatsapp',recipient_type:'individual',to,...payload}),signal:AbortSignal.timeout(8000)
     });
     const data=await response.json().catch(()=>null);

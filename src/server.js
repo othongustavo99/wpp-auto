@@ -5,6 +5,7 @@ import { createMetaSender } from './automation.js';
 import { migrate, registerTest, createPersistentAutomation } from './persistence.js';
 import {createAdmin} from './admin.js';
 import {createDiagnostics} from './diagnostics.js';
+import {configureCommercial} from './production.js';
 import {parseRoutes,applyRoutes} from './routing.js';
 
 const equal = (a,b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
@@ -18,7 +19,7 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, a
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) {
         let db='not_configured';try{if(databaseCheck){await databaseCheck();db='ok';}}catch{db='unavailable';}
-        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:7,database:db}), 'application/json');
+        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:8,database:db}), 'application/json');
       }
       if (url.pathname==='/admin'||url.pathname.startsWith('/admin/')) {if(!admin)return send(503,'Painel desativado');return await admin(req,res,url);}
       if (url.pathname !== '/webhook') return send(404,'Not found');
@@ -68,7 +69,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const {Pool}=await import('pg');
     const pool=new Pool({connectionString:env.DATABASE_URL,max:5,connectionTimeoutMillis:5000,statement_timeout:5000});
     pool.on('error',()=>console.error(JSON.stringify({event:'database_pool_error'})));
-    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:7}));
+    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:8}));
     const configured=await applyRoutes(pool,routes);
     if(configured!==null)console.log(JSON.stringify({event:'branch_routes_configured',configured,total:5}));
     const testRecipients=(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean);
@@ -79,12 +80,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       await registerTest(pool,{phoneId,wabaId});
       automation=createPersistentAutomation({pool,phoneId,wabaId,testRecipients,diagnostics,secret:env.META_APP_SECRET,send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo',testProfile:env.FORP_TEST_PROFILE||'forp_02'});
     }
-    const admin=env.ADMIN_PASSWORD?createAdmin({pool,diagnostics,password:env.ADMIN_PASSWORD,appSecret:env.META_APP_SECRET,enabled,testProfile:env.FORP_TEST_PROFILE||'forp_02'}):undefined;
-    const server=createApp({admin,diagnostics,verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation,databaseCheck:()=>pool.query('SELECT 1')});
-    const timer=automation?setInterval(()=>void automation.tick(),1000):undefined;
+    const commercial=await configureCommercial({pool,env});
+    const workers=[automation,...commercial.workers].filter(Boolean);
+    const dispatcher={enqueue:async(...args)=>{for(const w of workers)if(await w.enqueue(...args))return true;return false;},tick:async()=>{for(const w of workers)await w.tick();}};
+    const allDiagnostics={incoming:async(...args)=>{for(const d of [diagnostics,...Object.values(commercial.diagnostics)])await d.incoming(...args);},status:async(...args)=>{for(const d of [diagnostics,...Object.values(commercial.diagnostics)])await d.status(...args);},report:()=>diagnostics.report()};
+    const admin=env.ADMIN_PASSWORD?createAdmin({pool,diagnostics,commercial,password:env.ADMIN_PASSWORD,appSecret:env.META_APP_SECRET,enabled,testProfile:env.FORP_TEST_PROFILE||'forp_02'}):undefined;
+    const server=createApp({admin,diagnostics:allDiagnostics,verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation:dispatcher,databaseCheck:()=>pool.query('SELECT 1')});
+    let ticking=false;const timer=workers.length?setInterval(async()=>{if(ticking)return;ticking=true;try{await dispatcher.tick();}finally{ticking=false;}},1000):undefined;
     const cleanup=()=>pool.query("DELETE FROM connect_diagnostics WHERE observed_at<now()-interval '7 days'").catch(()=>console.error(JSON.stringify({event:'diagnostics_cleanup_failed'})));
     await cleanup();const cleanupTimer=setInterval(()=>void cleanup(),3600000);
-    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:7})));
+    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:8})));
     const stop=()=>{clearInterval(timer);clearInterval(cleanupTimer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
     process.once('SIGTERM',stop);process.once('SIGINT',stop);
   }

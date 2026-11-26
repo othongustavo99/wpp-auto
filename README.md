@@ -66,3 +66,35 @@ Documentação oficial da inscrição da WABA: https://developers.facebook.com/d
 ## Testes e limites
 
 `node --test`: 30 aprovados, 0 falhas, 1 opcional ignorado (PostgreSQL real sem TEST_DATABASE_URL). Inclui teste integrado HTTP assinado → fila simulada → worker → Graph simulado → status delivered simulado, diagnóstico com erros e autorização do painel. O resultado não comprova comunicação com a Meta real. PostgreSQL real e navegador real não foram testados neste ambiente. Dependência pg permanece a mesma; execute npm install para sincronizar o lockfile existente. O teste PostgreSQL opcional altera a configuração de teste; use exclusivamente banco descartável isolado, nunca o banco da FORP ou de produção. Nenhum token foi utilizado nesta execução.
+
+## Fase 8 — Preparação comercial (não é ativação na Meta)
+
+Esta versão substitui a limitação exclusivamente de teste por um modo comercial separado, desligado por padrão. A configuração da Fase 7 permanece disponível. `FORP_PRODUCTION_ENABLED=false` (ou ausente) mantém as três linhas sem respostas. Nunca substitua os IDs de teste pelos comerciais. `/health` retorna phase 8. A migração 004 adiciona escopo aos diagnósticos e um identificador HMAC de configuração às linhas, preservando o banco existente.
+
+### Pré-requisitos reais
+
+1. Confirmar no celular o recebimento de uma resposta do número de teste e os eventos de entrega. Diagnóstico OK não comprova envio/recebimento. Confirmar os três perfis e a persistência do painel.
+2. Em Meta Developers > 40Hz Connect > painel > Torne-se um Provedor de Tecnologia, iniciar o processo e verificar requisitos. Para acesso a ativos da FORP, o portfólio deve ser dela e o administrador deve autorizar a integração. Verificação empresarial/acesso de Tech Provider e análise de aplicativo para acesso avançado são requisitos distintos. Manter os ativos do cliente em nome dele.
+3. Usar Embedded Signup atualizado com opção de conectar WhatsApp Business existente (Coexistência). O fluxo de autorização, troca de código, inscrição da WABA e sincronização exigida pela Meta ainda NÃO foi implementado no Connect; esta fase prepara o motor para credenciais obtidas por onboarding autorizado. Não usar o fluxo de registro convencional, não excluir conta, não desvincular números e não chamar /register. A Meta exige tratamento adicional de webhooks de coexistência. Avaliar esse fluxo antes de conectar; não iniciar sincronização de dados médicos/histórico sem autorização e avaliação de privacidade. A plataforma pode desativar certos recursos e desvincular dispositivos associados; confirmar os impactos com a FORP. O app deve ficar publicado quando exigido para eventos reais.
+4. Após aprovação e conclusão do onboarding, obter Phone Number ID, WABA ID e token apropriado à conta do cliente, gerenciado no servidor. O token do usuário de sistema da Frequência40 não dá acesso automático ao cliente; usar o token/autorização conforme o fluxo aprovado e verificar validade/permissões. Não compartilhar tokens em mensagens, prints ou Git.
+
+Documentação: https://developers.facebook.com/documentation/business-messaging/whatsapp/embedded-signup/onboarding-business-app-users ; https://developers.facebook.com/docs/development/release/tech-providers/ ; https://developers.facebook.com/docs/business-management-apis/system-users/install-apps-and-generate-tokens/
+
+### Ativação somente depois da autorização e validação
+
+No Railway, inicialmente só acrescente `FORP_PRODUCTION_ENABLED=false`. Não mude WHATSAPP_ACCESS_TOKEN nem os IDs de teste. Não configure números comerciais agora. Após onboarding, testar uma linha por vez, preferencialmente Bragança, com destinatário interno autorizado:
+
+- `FORP_PRODUCTION_ENABLED=true`
+- `FORP_01_MODE=pilot`
+- `FORP_01_PHONE_ID` = Phone Number ID comercial, não o telefone público.
+- `FORP_01_WABA_ID` = ID da conta comercial da FORP (não o portfólio).
+- `FORP_01_ACCESS_TOKEN` = token autorizado para essa linha.
+- `FORP_01_PILOT_RECIPIENTS` = número(s) internos em formato internacional, só dígitos, separados por vírgula.
+
+Usar prefixo FORP_02 (MG) e FORP_03 (Joanópolis) para as outras linhas. `MODE=off` por padrão; `pilot` restringe os destinatários e `live` responde clientes reais, somente a mensagens novas recebidas por webhook. Não usar live antes da aprovação da FORP e de confirmar entrega no piloto e atendimento humano no celular. Configure uma única réplica, finalize o deploy anterior antes de mudar o modo; não execute dois serviços independentes sobre o mesmo banco. Os perfis podem ser pausados no painel. Para desativar tudo, alterar FORP_PRODUCTION_ENABLED=false e aplicar deploy, conferindo encerramento da versão anterior; mensagens já em envio podem terminar. Não é necessário desconectar a API para pausar o motor.
+
+A inicialização verifica via GET o número público esperado, ID, vínculo WABA, inscrição deste app e coexistência (`is_on_biz_app=true` e `platform_type=CLOUD_API`). Se não confirmar, a linha fica bloqueada e não responde; se a versão Graph não expuser os campos, revisar documentação e versão, nunca contornar a checagem. O check não comprova aprovação comercial ou entrega. Tokens são independentes por linha e nunca persistidos no banco. A fila usa o ID da linha, configuração vigente, lock e deduplicação; evita reenvio de eventos anteriores à ativação e respostas após 10 minutos. Pendências comerciais são descartadas durante redeploy para evitar respostas antigas. O conteúdo livre e anexos não são armazenados, apenas intenção sanitizada e destinatário temporário para envio. Diagnósticos por linha, sem conteúdo de mensagens. As mensagens automáticas nativas do WhatsApp Business podem coexistir e gerar duplicidade: verificar com a equipe antes de desativá-las, somente após sucesso do piloto. A escolha de unidade em MG permanece na mesma conversa, não distribui para atendentes individuais. Não há detecção automática de ocupação nem painel de inbox. Não sincroniza nem importa contatos/histórico, e ignora campos além de messages; o fluxo completo de coexistência ainda precisa ser concluído separadamente.
+
+### Validação
+
+`npm install` e `npm test`. 35 testes passaram, 1 opcional PostgreSQL ignorado (sem TEST_DATABASE_URL). Os cinco novos testes cobrem restrição de piloto, IDs e coexistência, bloqueio da ativação, origem da linha e uso de perfil comercial. A Meta e o banco foram simulados; não houve cadastro, ativação de linha ou envio real. Validar o painel e o banco real após deploy. Em `/admin`, use Consultar linhas; as três devem aparecer Desativadas inicialmente. Em seguida, mantenha o ambiente de teste e prossiga com os requisitos de Tech Provider e onboarding oficial. Não use banco de produção para testes automatizados.
