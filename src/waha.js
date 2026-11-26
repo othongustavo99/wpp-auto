@@ -13,8 +13,8 @@ export function readWahaConfig(env){
  return {base:base.origin,key:env.WAHA_API_KEY,hookSecret:env.WAHA_WEBHOOK_SECRET,secret:env.CONNECT_SECRET,enabled,expected,recipients,session:SESSION};
 }
 export function createWahaClient({base,key,session=SESSION,expected,recipients=[],fetchImpl=fetch}){
- async function request(path,body){
-  const r=await fetchImpl(base+path,{method:body===undefined?'GET':'POST',headers:{'X-Api-Key':key,Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:AbortSignal.timeout(8000)});
+ async function request(path,body,method=body===undefined?'GET':'POST'){
+  const r=await fetchImpl(base+path,{method,headers:{'X-Api-Key':key,Accept:'application/json',...(body===undefined?{}:{'Content-Type':'application/json'})},...(body===undefined?{}:{body:JSON.stringify(body)}),redirect:'error',signal:AbortSignal.timeout(method==='GET'?8000:25000)});
   const data=await r.json().catch(()=>null);if(!r.ok||data===null){const e=Error('WAHA request failed');e.httpStatus=r.status;throw e;}return data;
  }
  const list=()=>request('/api/sessions?all=true');
@@ -25,7 +25,13 @@ export function createWahaClient({base,key,session=SESSION,expected,recipients=[
   const data=await request('/api/sendText',{session,chatId:to+'@c.us',text:formatPayload(payload),linkPreview:false});
   if(typeof data?.id!=='string'||!data.id)throw Error('WAHA message id unavailable');return data.id;
  }
- return {list,own,checkIdentity,send};
+ const sessionPath=name=>'/api/sessions/'+encodeURIComponent(name);
+ const createSession=body=>request('/api/sessions',body);
+ const updateSession=(name,body)=>request(sessionPath(name),body,'PUT');
+ const startSession=name=>request(sessionPath(name)+'/start',{});
+ const stopSession=name=>request(sessionPath(name)+'/stop',{});
+ const getQR=name=>request('/api/'+encodeURIComponent(name)+'/auth/qr?format=image');
+ return {list,own,checkIdentity,send,createSession,updateSession,startSession,stopSession,getQR};
 }
 export function formatPayload(payload){
  if(payload?.type==='text'&&typeof payload.text?.body==='string')return payload.text.body;

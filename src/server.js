@@ -2,6 +2,7 @@ import { createServer } from 'node:http';
 import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {readWahaConfig,createWahaClient,createWahaDiagnostics,createWahaTransport,registerWahaTest,checkSignature} from './waha.js';
+import {createSessionControl} from './waha-sessions.js';
 import { migrate } from './persistence.js';
 import {createAdmin} from './admin.js';
 import {parseRoutes,applyRoutes} from './routing.js';
@@ -17,7 +18,7 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, a
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) {
         let db='not_configured';try{if(databaseCheck){await databaseCheck();db='ok';}}catch{db='unavailable';}
-        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:waha?10:8,database:db,...(waha?{provider:'waha'}:{})}), 'application/json');
+        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:waha?11:8,database:db,...(waha?{provider:'waha'}:{})}), 'application/json');
       }
       if (url.pathname==='/admin'||url.pathname.startsWith('/admin/')) {if(!admin)return send(503,'Painel desativado');return await admin(req,res,url);}
       if (waha) {
@@ -78,17 +79,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   await migrate(pool);await applyRoutes(pool,routes);await registerWahaTest(pool);
   // Legacy queue is never consumed in this runtime; remove pending identifiers/intents from retired transport.
   await pool.query("UPDATE connect_events SET status='expired',recipient=NULL,intent=NULL,finished_at=now() WHERE number_id<>'waha_test' AND status IN ('pending','processing')");
-  console.log(JSON.stringify({event:'database_migrated',phase:10}));
+  console.log(JSON.stringify({event:'database_migrated',phase:11}));
   if(!config.enabled)await pool.query("UPDATE connect_events SET status='expired',recipient=NULL,intent=NULL,finished_at=now() WHERE number_id='waha_test' AND status IN ('pending','processing')");
   const client=createWahaClient(config),diagnostics=createWahaDiagnostics({pool,client,config});
   const testProfile=env.FORP_TEST_PROFILE||'forp_02';
   const waha=createWahaTransport({pool,config,client,diagnostics,testProfile,tz:env.TZ||'America/Sao_Paulo'});
-  const admin=env.ADMIN_PASSWORD?createAdmin({pool,diagnostics,password:env.ADMIN_PASSWORD,appSecret:config.secret,enabled:config.enabled,testProfile}):undefined;
+  const sessionControl=createSessionControl({client,config,webhookUrl:env.WAHA_WEBHOOK_URL||undefined});
+  const admin=env.ADMIN_PASSWORD?createAdmin({pool,diagnostics,sessionControl,password:env.ADMIN_PASSWORD,appSecret:config.secret,enabled:config.enabled,testProfile}):undefined;
   const server=createApp({waha,admin,databaseCheck:()=>pool.query('SELECT 1')});
   let ticking=false;const timer=setInterval(async()=>{if(ticking)return;ticking=true;try{await waha.tick();}catch{console.error(JSON.stringify({event:'waha_worker_error'}));}finally{ticking=false;}},1000);
   const cleanup=async()=>{try{await pool.query("DELETE FROM connect_diagnostics WHERE observed_at<now()-interval '7 days'");await pool.query("DELETE FROM connect_events WHERE finished_at<now()-interval '7 days'");await pool.query('DELETE FROM connect_sessions WHERE expires_at<=now()');}catch{console.error(JSON.stringify({event:'cleanup_failed'}));}};
   await cleanup();const cleanupTimer=setInterval(()=>void cleanup(),3600000);
-  server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,phase:10,provider:'waha',automationEnabled:config.enabled})));
+  server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,phase:11,provider:'waha',automationEnabled:config.enabled})));
   const stop=()=>{clearInterval(timer);clearInterval(cleanupTimer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
   process.once('SIGTERM',stop);process.once('SIGINT',stop);
  }

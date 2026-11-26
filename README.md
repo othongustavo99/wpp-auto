@@ -1,44 +1,23 @@
-# 40Hz Connect — Fase 10 (v0.10.0)
+# 40Hz Connect — Fase 11 (v0.11.0)
 
-Migração da camada de comunicação para WAHA. Base: ZIP da Fase 8. O runtime agora exige WAHA e não consulta a Cloud API. O código/testes históricos da integração Meta foram mantidos apenas para regressão/rollback; o endpoint antigo `/webhook` responde 404 no runtime novo. As tabelas, perfis, painel e configurações anteriores são preservados. A fila antiga pendente é expirada sem envio (identificadores de destinatário e intent são apagados dessas tarefas). Faça backup do PostgreSQL antes do deploy.
+Base: ZIP 40hzconnect.zip fornecido pelo usuário, fase 10. Adiciona controle autenticado da sessão piloto WAHA `connect_test`: criar/iniciar, status, QR e pausar. Nenhuma linha comercial é conectada ou ativada nesta etapa. As funcionalidades anteriores e o banco são mantidos. WAHA é integração não oficial; há risco de suspensão e desconexão. Não use números comerciais ou conversas de pacientes no piloto.
 
-## 1. Railway
+## Instalação
 
-No serviço `wpp-auto` (não no `waha`):
+1. Backup do banco e do projeto. Extraia o ZIP na raiz do projeto, mantendo `.git`, `.env` privados. Não há arquivos a excluir.
+2. Em `waha` (serviço Docker privado), confirme volume `/app/.sessions`, API key e porta 3000. Adicione `WAHA_EVENTS_DOWNLOAD_MEDIA=false` e `WAHA_API_DOWNLOAD_MEDIA=false` para reduzir o tratamento de anexos; mantenha `WAHA_PRINT_QR=false`. Não exponha o serviço publicamente.
+3. Em `wpp-auto`, mantenha todas as variáveis anteriores. Configure `WAHA_TEST_NUMBER` com o número separado que vai ser pareado (55 + DDD + número, somente dígitos). `WHATSAPP_TEST_RECIPIENTS` precisa conter outro número autorizado que enviará mensagens ao piloto; lista separada por vírgulas, sem espaços. Nenhum dos três números FORP pode ser usado. Mantenha `WAHA_AUTOMATION_ENABLED=false`, `WHATSAPP_AUTOMATION_ENABLED=false`, `FORP_PRODUCTION_ENABLED=false`. `WAHA_WEBHOOK_URL` é opcional; o padrão é `http://wpp-auto.railway.internal:8080/webhook/waha`. A assinatura HMAC usa a chave `WAHA_WEBHOOK_SECRET` já existente, sem expô-la ao browser.
+4. Execute `npm ci`, `npm test`, `git add .`, `git commit -m "Fase 11 - Pareamento WAHA"`, `git push`.
+5. Após deploy, abra https://wpp-auto-production.up.railway.app/health : esperado `{"service":"40Hz Connect","status":"ok","phase":11,"database":"ok","provider":"waha"}`. Health não valida a API WAHA. Entre no painel `/admin`, clique Verificar integração: API WAHA deve indicar OK antes do pareamento. Se indisponível, confira rede privada, bind e porta, não exponha o serviço para contornar o problema. HTTP 401/403: confira chave da API original e referência entre serviços.
 
-| Variável | Valor |
-|---|---|
-| WHATSAPP_PROVIDER | waha |
-| WAHA_BASE_URL | http://waha.railway.internal:3000 |
-| WAHA_API_KEY | ${{waha.WAHA_API_KEY}} (chave original, não hash) |
-| CONNECT_SECRET | chave aleatória independente de 32 bytes em hex |
-| WAHA_WEBHOOK_SECRET | outra chave aleatória independente de 32 bytes em hex |
-| WAHA_AUTOMATION_ENABLED | false |
-| DATABASE_URL | referência ao PostgreSQL existente |
-| ADMIN_PASSWORD | senha administrativa existente |
-| PORT | 8080 |
-| TZ | America/Sao_Paulo |
+## Pareamento
 
-Gere as duas chaves novas executando duas vezes `node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"`. Não compartilhe os valores. CONNECT_SECRET protege o painel e hashes internos; WAHA_WEBHOOK_SECRET será usado para assinatura do webhook. Não reutilize chaves. A troca da chave de assinatura do painel invalida cookies anteriores: entre novamente com ADMIN_PASSWORD.
+No painel, seção Conexão de teste, clique Preparar conexão. Atualize o estado até aparecer Aguardando leitura do QR; clique Mostrar / atualizar QR. No telefone de teste, WhatsApp > Aparelhos conectados > Conectar um aparelho, escaneie o código. Não compartilhe a imagem. Clique Atualizar estado; esperado Conectada (WORKING), identidade confirmada. Se número incorreto, pause e desvincule pelo telefone. QR é temporário e desaparece após 25 segundos ou atualização do estado. Caso expire, solicite outro. Se o WhatsApp pedir passkey, use os procedimentos oficiais do aparelho ou pause; esta versão não implementa confirmação de passkey. O botão Pausar sessão interrompe a sessão sem apagar o vínculo, para desvincular definitivamente use Aparelhos conectados no telefone. Sessões existentes sem marca de propriedade do Connect não são adotadas/modificadas.
 
-Mantenha `WHATSAPP_TEST_RECIPIENTS` como destinatários privados de teste e `FORP_TEST_PROFILE` (opcional). Não defina `WAHA_TEST_NUMBER` ainda, ou deixe vazio. Os três números da FORP são proibidos no piloto. Mantenha `WHATSAPP_AUTOMATION_ENABLED=false` e `FORP_PRODUCTION_ENABLED=false` durante a migração. Após o deploy e verificação, os IDs/tokens antigos da Meta são dispensáveis e podem ser removidos do serviço; não remova as variáveis de banco, administração ou teste. Não é necessário abrir o Meta Developers.
+Com automação ainda desligada, envie uma mensagem de teste do destinatário autorizado para a linha pareada. Verifique se o contador Recebidas do Diagnóstico aumenta. O evento deve ser direto, texto recente, não próprio, sem anexo, e com identidade e destinatário esperados. JIDs @lid não são aceitos pelo piloto atual. Se não incrementar, confira logs privados e o webhook HMAC; não compartilhe payloads nem chaves. Nenhuma resposta automática é esperada nesta fase. Fase 12 vai validar o envio/entrega e persistência após reiniciar o WAHA antes de ativar qualquer linha comercial.
 
-No WAHA, mantenha a API autenticada, rede privada e volume `/app/.sessions`. Não gere domínio público. A configuração da sessão e seu webhook será feita na Fase 11; não conecte números nesta fase. Documentação: https://waha.devlike.pro/docs/how-to/sessions/ e https://waha.devlike.pro/docs/how-to/events/ .
+## Testes e limitações
 
-## 2. Aplicar ZIP
+48 testes aprovados, 1 ignorado (PostgreSQL real indisponível). Testes usam WAHA simulado, incluindo rotas HTTP autenticadas, criação, QR, pausa e identidade incorreta. Pareamento real, webhook pela rede privada, compatibilidade do motor WEBJS e renderização visual ainda precisam de validação no Railway. Não há mudanças nas migrações ou dependências nesta fase. Código legado da Meta continua presente apenas para regressão, não é usado no runtime WAHA. O QR não é salvo no banco nem incluído nos logs do Connect; o WAHA mantém credenciais no volume, que deve ser protegido. A sessão vinculada pode acessar conversas do aparelho; não use dados reais de pacientes neste piloto.
 
-Sobreponha arquivos na raiz do projeto, mantendo `.git` e `.env` privados. Execute `npm install`, `npm test`, `git add .`, `git commit -m "Fase 10 - Integracao WAHA"`, `git push`. O ZIP não inclui lockfile: npm install atualiza o existente. Não recrie o banco.
-
-## 3. Validação real
-
-Abra https://wpp-auto-production.up.railway.app/health — esperado: `{"service":"40Hz Connect","status":"ok","phase":10,"database":"ok","provider":"waha"}`. Health não testa WAHA.
-
-Abra `/admin`, entre novamente se necessário e clique Verificar integração em Diagnóstico do WAHA. API WAHA (rede privada) deve indicar OK. Sessão connect_test: Não encontrado é normal antes do QR; identidade: Configuração incompleta. Se HTTP 401/403: confira chave original idêntica nos serviços. Se indisponível: confira nome privado do serviço, porta 3000, logs e configuração de rede. Não exponha a API para contornar falhas. O diagnóstico consulta GET /api/sessions?all=true, não retorna segredos da sessão e não envia mensagens.
-
-## 4. Funcionamento do piloto preparado (não habilitar nesta fase)
-
-O novo endpoint POST `/webhook/waha` exige HMAC SHA512 em hex do corpo bruto, cabeçalhos X-Webhook-Hmac e X-Webhook-Hmac-Algorithm. Na próxima fase configurar webhook da sessão `connect_test` para `http://wpp-auto.railway.internal:8080/webhook/waha`, evento `message`, chave WAHA_WEBHOOK_SECRET via config.hmac.key (não usar chave de API). O processamento aceita apenas conversas diretas de texto, recentes, com identidade do número de teste verificada, destinatários autorizados e sem mensagens próprias, grupos ou anexos. JIDs @lid ficam fora até suportarmos resolução segura. O banco usa `waha_test` separado de `meta_test`, reutilizando fila, deduplicação, horários e sessões. Antes de enviar, confirma que a sessão WORKING corresponde ao número de teste. Não há integração comercial nesta fase, nem leitura/entrega real confirmada. Menu de MG usa texto numerado (1 Monte Verde, 2 Camanducaia, 3 Cambuí), não lista interativa. A prévia apresenta as opções numeradas. A confirmação do envio pelo WAHA não comprova entrega; eventos de ACK ainda não implementados.
-
-## 5. Testes e limitações
-
-Node 22: 43 testes aprovados, 1 PostgreSQL real ignorado sem TEST_DATABASE_URL. Inclui testes com API WAHA simulada, HMAC, bloqueio de origens e destinatários inválidos, diagnóstico e fila. Não testado com WAHA/WhatsApp reais, PostgreSQL real ou navegador real neste ambiente. `npm install` é necessário para dependência pg. O WAHA não é oficial e pode provocar bloqueios de números, instabilidade e desconexões. Não é indicado conectar números comerciais antes de avaliar riscos, autorização da FORP e proteção de dados (incluindo dados de saúde). O WAHA/volume pode armazenar dados de sessão/mensagens fora do nosso banco; não presumir ausência de dados sensíveis. Teste com número separado e sem dados de pacientes. Não desative restrições impostas pelo WhatsApp.
+Docs: https://waha.devlike.pro/docs/how-to/sessions/ ; https://waha.devlike.pro/docs/how-to/events/ ; https://waha.devlike.pro/docs/how-to/config/ .
