@@ -1,27 +1,35 @@
 import { createServer } from 'node:http';
 import { createHmac, timingSafeEqual, createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
-import { createMetaSender } from './automation.js';
-import { migrate, registerTest, createPersistentAutomation } from './persistence.js';
+import {readWahaConfig,createWahaClient,createWahaDiagnostics,createWahaTransport,registerWahaTest,checkSignature} from './waha.js';
+import { migrate } from './persistence.js';
 import {createAdmin} from './admin.js';
-import {createDiagnostics} from './diagnostics.js';
-import {configureCommercial} from './production.js';
 import {parseRoutes,applyRoutes} from './routing.js';
 
 const equal = (a,b) => timingSafeEqual(createHash('sha256').update(String(a)).digest(), createHash('sha256').update(String(b)).digest());
 const safeCode = v => typeof v === 'number' && Number.isSafeInteger(v) ? v : undefined;
 const maskId = v => typeof v === 'string' && v.length > 8 ? v.slice(-8) : undefined;
-export function createApp({ verifyToken, appSecret, automation, databaseCheck, admin, diagnostics, log = console.log }) {
-  if (!verifyToken || !appSecret) throw new Error('Defina WHATSAPP_VERIFY_TOKEN e META_APP_SECRET');
+export function createApp({ verifyToken, appSecret, automation, databaseCheck, admin, diagnostics, waha, log = console.log }) {
+  if (!waha && (!verifyToken || !appSecret)) throw new Error('Defina WHATSAPP_VERIFY_TOKEN e META_APP_SECRET');
   return createServer(async (req, res) => {
     const send = (code, text, type = 'text/plain; charset=utf-8') => { res.writeHead(code, {'Content-Type':type,'Cache-Control':'no-store'}); res.end(text); };
     try {
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && ['/', '/health'].includes(url.pathname)) {
         let db='not_configured';try{if(databaseCheck){await databaseCheck();db='ok';}}catch{db='unavailable';}
-        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:8,database:db}), 'application/json');
+        return send(db==='unavailable'?503:200, JSON.stringify({service:'40Hz Connect',status:db==='unavailable'?'degraded':'ok',phase:waha?10:8,database:db,...(waha?{provider:'waha'}:{})}), 'application/json');
       }
       if (url.pathname==='/admin'||url.pathname.startsWith('/admin/')) {if(!admin)return send(503,'Painel desativado');return await admin(req,res,url);}
+      if (waha) {
+        if (url.pathname !== '/webhook/waha') return send(404,'Not found');
+        if (req.method !== 'POST') return send(405,'Method not allowed');
+        const chunks=[];let size=0;
+        for await(const chunk of req){size+=chunk.length;if(size>1024*1024)return send(413,'Payload too large');chunks.push(chunk);}
+        const raw=Buffer.concat(chunks);
+        if(!checkSignature(raw,req.headers,waha.hookSecret))return send(401,'Invalid signature');
+        let event;try{event=JSON.parse(raw.toString('utf8'));}catch{return send(400,'Invalid JSON');}
+        await waha.receive(event);return send(200,'OK');
+      }
       if (url.pathname !== '/webhook') return send(404,'Not found');
       if (req.method === 'GET') {
         const challenge = url.searchParams.get('hub.challenge');
@@ -61,37 +69,28 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, a
   });
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const env=process.env;
-  const port=Number(env.PORT||8080),enabled=env.WHATSAPP_AUTOMATION_ENABLED==='true';
-  async function start(){
-    if(!env.DATABASE_URL)throw new Error('DATABASE_URL required');
-    const routes=parseRoutes(env.FORP_BRANCH_ROUTES);
-    const {Pool}=await import('pg');
-    const pool=new Pool({connectionString:env.DATABASE_URL,max:5,connectionTimeoutMillis:5000,statement_timeout:5000});
-    pool.on('error',()=>console.error(JSON.stringify({event:'database_pool_error'})));
-    await migrate(pool);console.log(JSON.stringify({event:'database_migrated',phase:8}));
-    const configured=await applyRoutes(pool,routes);
-    if(configured!==null)console.log(JSON.stringify({event:'branch_routes_configured',configured,total:5}));
-    const testRecipients=(env.WHATSAPP_TEST_RECIPIENTS??'').split(',').map(s=>s.trim()).filter(Boolean);
-    const diagnostics=createDiagnostics({pool,phoneId:env.WHATSAPP_PHONE_NUMBER_ID,wabaId:env.WHATSAPP_BUSINESS_ACCOUNT_ID,appId:env.META_APP_ID,token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0',secret:env.META_APP_SECRET,testRecipients});
-    let automation;
-    if(enabled){
-      const phoneId=env.WHATSAPP_PHONE_NUMBER_ID,wabaId=env.WHATSAPP_BUSINESS_ACCOUNT_ID;
-      await registerTest(pool,{phoneId,wabaId});
-      automation=createPersistentAutomation({pool,phoneId,wabaId,testRecipients,diagnostics,secret:env.META_APP_SECRET,send:createMetaSender({token:env.WHATSAPP_ACCESS_TOKEN,version:env.META_GRAPH_API_VERSION||'v25.0'}),tz:env.TZ||'America/Sao_Paulo',testProfile:env.FORP_TEST_PROFILE||'forp_02'});
-    }
-    const commercial=await configureCommercial({pool,env});
-    const workers=[automation,...commercial.workers].filter(Boolean);
-    const dispatcher={enqueue:async(...args)=>{for(const w of workers)if(await w.enqueue(...args))return true;return false;},tick:async()=>{for(const w of workers)await w.tick();}};
-    const allDiagnostics={incoming:async(...args)=>{for(const d of [diagnostics,...Object.values(commercial.diagnostics)])await d.incoming(...args);},status:async(...args)=>{for(const d of [diagnostics,...Object.values(commercial.diagnostics)])await d.status(...args);},report:()=>diagnostics.report()};
-    const admin=env.ADMIN_PASSWORD?createAdmin({pool,diagnostics,commercial,password:env.ADMIN_PASSWORD,appSecret:env.META_APP_SECRET,enabled,testProfile:env.FORP_TEST_PROFILE||'forp_02'}):undefined;
-    const server=createApp({admin,diagnostics:allDiagnostics,verifyToken:env.WHATSAPP_VERIFY_TOKEN,appSecret:env.META_APP_SECRET,automation:dispatcher,databaseCheck:()=>pool.query('SELECT 1')});
-    let ticking=false;const timer=workers.length?setInterval(async()=>{if(ticking)return;ticking=true;try{await dispatcher.tick();}finally{ticking=false;}},1000):undefined;
-    const cleanup=()=>pool.query("DELETE FROM connect_diagnostics WHERE observed_at<now()-interval '7 days'").catch(()=>console.error(JSON.stringify({event:'diagnostics_cleanup_failed'})));
-    await cleanup();const cleanupTimer=setInterval(()=>void cleanup(),3600000);
-    server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,automationEnabled:enabled,phase:8})));
-    const stop=()=>{clearInterval(timer);clearInterval(cleanupTimer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
-    process.once('SIGTERM',stop);process.once('SIGINT',stop);
-  }
-  start().catch(()=>{console.error(JSON.stringify({event:'startup_failed',hint:'Check DATABASE_URL, pg installation, Meta variables and database permissions'}));process.exit(1);});
+ const env=process.env,port=Number(env.PORT||8080);
+ async function start(){
+  if(env.WHATSAPP_PROVIDER!=='waha'||!env.DATABASE_URL)throw Error('Configure WHATSAPP_PROVIDER=waha e DATABASE_URL');
+  const config=readWahaConfig(env),routes=parseRoutes(env.FORP_BRANCH_ROUTES);
+  const {Pool}=await import('pg');const pool=new Pool({connectionString:env.DATABASE_URL,max:5,connectionTimeoutMillis:5000,statement_timeout:5000});
+  pool.on('error',()=>console.error(JSON.stringify({event:'database_pool_error'})));
+  await migrate(pool);await applyRoutes(pool,routes);await registerWahaTest(pool);
+  // Legacy queue is never consumed in this runtime; remove pending identifiers/intents from retired transport.
+  await pool.query("UPDATE connect_events SET status='expired',recipient=NULL,intent=NULL,finished_at=now() WHERE number_id<>'waha_test' AND status IN ('pending','processing')");
+  console.log(JSON.stringify({event:'database_migrated',phase:10}));
+  if(!config.enabled)await pool.query("UPDATE connect_events SET status='expired',recipient=NULL,intent=NULL,finished_at=now() WHERE number_id='waha_test' AND status IN ('pending','processing')");
+  const client=createWahaClient(config),diagnostics=createWahaDiagnostics({pool,client,config});
+  const testProfile=env.FORP_TEST_PROFILE||'forp_02';
+  const waha=createWahaTransport({pool,config,client,diagnostics,testProfile,tz:env.TZ||'America/Sao_Paulo'});
+  const admin=env.ADMIN_PASSWORD?createAdmin({pool,diagnostics,password:env.ADMIN_PASSWORD,appSecret:config.secret,enabled:config.enabled,testProfile}):undefined;
+  const server=createApp({waha,admin,databaseCheck:()=>pool.query('SELECT 1')});
+  let ticking=false;const timer=setInterval(async()=>{if(ticking)return;ticking=true;try{await waha.tick();}catch{console.error(JSON.stringify({event:'waha_worker_error'}));}finally{ticking=false;}},1000);
+  const cleanup=async()=>{try{await pool.query("DELETE FROM connect_diagnostics WHERE observed_at<now()-interval '7 days'");await pool.query("DELETE FROM connect_events WHERE finished_at<now()-interval '7 days'");await pool.query('DELETE FROM connect_sessions WHERE expires_at<=now()');}catch{console.error(JSON.stringify({event:'cleanup_failed'}));}};
+  await cleanup();const cleanupTimer=setInterval(()=>void cleanup(),3600000);
+  server.listen(port,'0.0.0.0',()=>console.log(JSON.stringify({event:'server_started',port,phase:10,provider:'waha',automationEnabled:config.enabled})));
+  const stop=()=>{clearInterval(timer);clearInterval(cleanupTimer);server.close(()=>{void pool.end().finally(()=>process.exit(0));});};
+  process.once('SIGTERM',stop);process.once('SIGINT',stop);
+ }
+ start().catch(()=>{console.error(JSON.stringify({event:'startup_failed',hint:'Check DATABASE_URL, pg, WHATSAPP_PROVIDER and WAHA/CONNECT variables'}));process.exit(1);});
 }

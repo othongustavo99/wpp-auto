@@ -28,10 +28,10 @@ export async function registerTest(pool,{phoneId,wabaId}){
   await pool.query(`INSERT INTO connect_numbers(id,label,phone_id,waba_id,enabled,is_test) VALUES ('meta_test','Meta teste',$1,$2,true,true)
     ON CONFLICT(id) DO UPDATE SET phone_id=EXCLUDED.phone_id,waba_id=EXCLUDED.waba_id,enabled=true,is_test=true`,[phoneId,wabaId]);
 }
-export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,send,secret,log=console.log,now=Date.now,tz='America/Sao_Paulo',testProfile='forp_02',diagnostics,commercialProfile,mode='pilot',runtimeKey,activatedAt=0}){
-  if(!/^\d+$/.test(phoneId??'')||!/^\d+$/.test(wabaId??'')||(!testRecipients?.length&&!(commercialProfile&&mode==='live'))||!Array.isArray(testRecipients)||!testRecipients.every(x=>/^\d{8,15}$/.test(x))||!secret||!profileIds.includes(testProfile)||(commercialProfile&&(!profileIds.includes(commercialProfile)||commercialProfile!==testProfile||!['pilot','live'].includes(mode)||!runtimeKey)))throw new Error('Configuracao de teste invalida');
+export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,send,secret,log=console.log,now=Date.now,tz='America/Sao_Paulo',testProfile='forp_02',diagnostics,commercialProfile,mode='pilot',runtimeKey,activatedAt=0,testNumberId='meta_test'}){
+  if(!(testNumberId==='waha_test'?phoneId==='connect_test'&&wabaId==='waha':testNumberId==='meta_test'&&/^\d+$/.test(phoneId??'')&&/^\d+$/.test(wabaId??''))||(!testRecipients?.length&&!(commercialProfile&&mode==='live'))||!Array.isArray(testRecipients)||!testRecipients.every(x=>/^\d{8,15}$/.test(x))||!secret||!profileIds.includes(testProfile)||(commercialProfile&&(!profileIds.includes(commercialProfile)||commercialProfile!==testProfile||!['pilot','live'].includes(mode)||!runtimeKey)))throw new Error('Configuracao de teste invalida');
   new Intl.DateTimeFormat('en-US',{timeZone:tz});
-  const allowed=new Set(testRecipients), isTest=!commercialProfile, numberId=commercialProfile||'meta_test', allowedRecipient=v=>typeof v==='string'&&/^\d{8,15}$/.test(v)&&(commercialProfile&&mode==='live'||allowed.has(v)), maxAge=isTest?DAY:600000, hash=s=>createHmac('sha256',secret).update(s).digest('hex');
+  const allowed=new Set(testRecipients), isTest=!commercialProfile, numberId=commercialProfile||testNumberId, allowedRecipient=v=>typeof v==='string'&&/^\d{8,15}$/.test(v)&&(commercialProfile&&mode==='live'||allowed.has(v)), maxAge=isTest?DAY:600000, hash=s=>createHmac('sha256',secret).update(s).digest('hex');
   const emit=(event,extra={})=>log(JSON.stringify({event,...extra}));
   async function enqueue(entryId,metadata,msg){
     if(String(entryId)!==wabaId||String(metadata?.phone_number_id)!==phoneId||!allowedRecipient(msg?.from)||typeof msg?.id!=='string'||!['text','interactive','image','audio','video','document','sticker','location','contacts'].includes(msg?.type))return false;
@@ -58,7 +58,7 @@ export function createPersistentAutomation({pool,phoneId,wabaId,testRecipients,s
       const job=r.rows[0];if(!job)return;
       const args=[job.number_id,job.message_hash];
       const finish=async status=>c.query('UPDATE connect_events SET status=$3,recipient=NULL,intent=NULL,finished_at=now() WHERE number_id=$1 AND message_hash=$2',[...args,status]);
-      if(!allowedRecipient(job.recipient)||now()-new Date(job.occurred_at).getTime()>=maxAge){await finish('expired');return;}
+      if(!allowedRecipient(job.recipient)||new Date(job.occurred_at).getTime()<activatedAt||now()-new Date(job.occurred_at).getTime()>=(testNumberId==='waha_test'?600000:maxAge)){await finish('expired');return;}
       if(job.intent?.testProfile!==testProfile){await finish('expired');return;}
       const state=(await c.query('SELECT state,branch_id FROM connect_sessions WHERE number_id=$1 AND contact_hash=$2 AND expires_at>now()',[job.number_id,job.contact_hash])).rows[0];
       const profile=await loadProfile(c,testProfile);
