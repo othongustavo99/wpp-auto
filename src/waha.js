@@ -3,6 +3,7 @@ import {createPersistentAutomation} from './persistence.js';
 import {forpNumbers} from './routing.js';
 const digits=v=>typeof v==='string'&&/^\d{8,15}$/.test(v);
 const userId=v=>typeof v==='string'&&/^\d{8,15}@c\.us$/.test(v)?v.split('@')[0]:null;
+const directChat=v=>typeof v==='string'&&/^\d{8,20}@(c\.us|lid)$/.test(v);
 export const SESSION='connect_test';
 export function readWahaConfig(env){
  const enabled=env.WAHA_AUTOMATION_ENABLED==='true',base=new URL(env.WAHA_BASE_URL||'http://waha.railway.internal:3000');
@@ -20,9 +21,20 @@ export function createWahaClient({base,key,session=SESSION,expected,recipients=[
  const list=()=>request('/api/sessions?all=true');
  const own=()=>request('/api/sessions/'+encodeURIComponent(session));
  async function checkIdentity(){const s=await own();return !!expected&&s.name===session&&s.status==='WORKING'&&userId(s.me?.id)===expected;}
+ async function resolveRecipient(to){
+  if(!recipients.includes(to)||to===expected)throw Error('WAHA recipient not authorized');
+  const data=await request('/api/contacts/check-exists?'+new URLSearchParams({phone:to,session}));
+  return data?.numberExists===true&&directChat(data.chatId)?data.chatId:null;
+ }
+ async function matchRecipient(chatId){
+  if(!directChat(chatId))return null;
+  const matches=[];for(const to of recipients){if(await resolveRecipient(to)===chatId)matches.push(to);}
+  return matches.length===1?matches[0]:null;
+ }
  async function send(_session,to,payload){
   if(_session!==session||!digits(to)||!recipients.includes(to)||to===expected||!await checkIdentity())throw Error('WAHA identity not confirmed');
-  const data=await request('/api/sendText',{session,chatId:to+'@c.us',text:formatPayload(payload),linkPreview:false});
+  const chatId=await resolveRecipient(to);if(!chatId)throw Error('WAHA recipient not resolved');
+  const data=await request('/api/sendText',{session,chatId,text:formatPayload(payload),linkPreview:false});
   if(typeof data?.id!=='string'||!data.id)throw Error('WAHA message id unavailable');return data.id;
  }
  const sessionPath=name=>'/api/sessions/'+encodeURIComponent(name);
@@ -31,7 +43,7 @@ export function createWahaClient({base,key,session=SESSION,expected,recipients=[
  const startSession=name=>request(sessionPath(name)+'/start',{});
  const stopSession=name=>request(sessionPath(name)+'/stop',{});
  const getQR=name=>request('/api/'+encodeURIComponent(name)+'/auth/qr?format=image');
- return {list,own,checkIdentity,send,createSession,updateSession,startSession,stopSession,getQR};
+ return {list,own,checkIdentity,send,matchRecipient,createSession,updateSession,startSession,stopSession,getQR};
 }
 export function formatPayload(payload){
  if(payload?.type==='text'&&typeof payload.text?.body==='string')return payload.text.body;
@@ -43,11 +55,19 @@ export function checkSignature(raw,headers,key){
  const sig=headers['x-webhook-hmac'];if(headers['x-webhook-hmac-algorithm']!=='sha512'||typeof sig!=='string'||! /^[a-fA-F0-9]{128}$/.test(sig))return false;
  return timingSafeEqual(Buffer.from(sig,'hex'),createHmac('sha512',key).update(raw).digest());
 }
-export function parseIncoming(event,{session=SESSION,expected,recipients,now=Date.now()}){
- const p=event?.payload,from=userId(p?.from);if(event?.event!=='message'||event.session!==session||!expected||userId(event.me?.id)!==expected||p?.fromMe!==false||!from||from===expected||!recipients.includes(from)||typeof p.id!=='string'||!p.id||p.id.length>1024||p.hasMedia!==false||typeof p.body!=='string')return null;
- const stamp=Number(p.timestamp)*1000;if(!Number.isFinite(stamp)||stamp<=0||now-stamp>600000||stamp-now>300000)return null;
- return {id:p.id,from,timestamp:String(p.timestamp),type:'text',text:{body:p.body}};
+function inspectIncoming(event,{session=SESSION,expected,recipients,now=Date.now()},resolved=null){
+ const p=event?.payload;
+ if(event?.event!=='message'||event.session!==session)return {reason:'event_or_session'};
+ if(!expected||userId(event.me?.id)!==expected)return {reason:'identity'};
+ if(p?.fromMe!==false)return {reason:'own_message'};
+ if(!directChat(p.from)||userId(p.from)===expected)return {reason:'not_direct'};
+ if(typeof p.id!=='string'||!p.id||p.id.length>1024||p.hasMedia!==false||typeof p.body!=='string')return {reason:'not_text'};
+ const stamp=Number(p.timestamp)*1000;if(!Number.isFinite(stamp)||stamp<=0||now-stamp>600000||stamp-now>300000)return {reason:'timestamp'};
+ const from=resolved||userId(p.from);
+ if(!from||from===expected||!recipients.includes(from))return {reason:'recipient_unresolved'};
+ return {msg:{id:p.id,from,timestamp:String(p.timestamp),type:'text',text:{body:p.body}}};
 }
+export function parseIncoming(event,config){return inspectIncoming(event,config).msg??null;}
 export async function registerWahaTest(pool,session=SESSION){
  await pool.query(`INSERT INTO connect_numbers(id,label,phone_id,waba_id,enabled,is_test) VALUES ('waha_test','WAHA teste',$1,'waha',true,true) ON CONFLICT(id) DO UPDATE SET phone_id=EXCLUDED.phone_id,waba_id='waha',enabled=true,is_test=true`,[session]);
 }
@@ -64,9 +84,16 @@ export function createWahaDiagnostics({pool,client,config,log=console.log}){
 export function createWahaTransport({pool,config,client,diagnostics,testProfile,tz,log=console.log,now=Date.now}){
  const automation=config.enabled?createPersistentAutomation({pool,phoneId:config.session,wabaId:'waha',testNumberId:'waha_test',testRecipients:config.recipients,send:client.send,secret:config.secret,diagnostics,testProfile,tz,now,log,activatedAt:now()}):null;
  return {hookSecret:config.hookSecret,async receive(event){
-  const msg=parseIncoming(event,{...config,now:now()});if(!msg)return false;
-  await diagnostics.record('incoming',msg.id);if(!automation)return false;
-  if(!await client.checkIdentity())return false;
-  return automation.enqueue('waha',{phone_number_id:config.session},msg);
+  const context={...config,now:now()};let result=inspectIncoming(event,context);
+  if(result.reason==='recipient_unresolved'&&client.matchRecipient){
+   try{if(await client.checkIdentity()){const match=await client.matchRecipient(event.payload.from);if(match)result=inspectIncoming(event,context,match);}}
+   catch{log(JSON.stringify({event:'waha_message_ignored',reason:'recipient_lookup_failed'}));return false;}
+  }
+  if(!result.msg){if(event?.event==='message'&&event.session===config.session)log(JSON.stringify({event:'waha_message_ignored',reason:result.reason}));return false;}
+  const msg=result.msg;await diagnostics.record('incoming',msg.id);
+  log(JSON.stringify({event:'waha_message_received',automationEnabled:config.enabled}));if(!automation)return false;
+  if(!await client.checkIdentity()){log(JSON.stringify({event:'waha_message_ignored',reason:'identity_check_failed'}));return false;}
+  const queued=await automation.enqueue('waha',{phone_number_id:config.session},msg);
+  if(!queued)log(JSON.stringify({event:'waha_message_ignored',reason:'not_queued'}));return queued;
  },tick:()=>automation?.tick()};
 }

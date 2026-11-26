@@ -1,4 +1,4 @@
-# 40Hz Connect — Fase 11 (v0.11.0)
+# 40Hz Connect — Fase 11 (v0.11.1)
 
 Base: ZIP 40hzconnect.zip fornecido pelo usuário, fase 10. Adiciona controle autenticado da sessão piloto WAHA `connect_test`: criar/iniciar, status, QR e pausar. Nenhuma linha comercial é conectada ou ativada nesta etapa. As funcionalidades anteriores e o banco são mantidos. WAHA é integração não oficial; há risco de suspensão e desconexão. Não use números comerciais ou conversas de pacientes no piloto.
 
@@ -14,7 +14,7 @@ Base: ZIP 40hzconnect.zip fornecido pelo usuário, fase 10. Adiciona controle au
 
 No painel, seção Conexão de teste, clique Preparar conexão. Atualize o estado até aparecer Aguardando leitura do QR; clique Mostrar / atualizar QR. No telefone de teste, WhatsApp > Aparelhos conectados > Conectar um aparelho, escaneie o código. Não compartilhe a imagem. Clique Atualizar estado; esperado Conectada (WORKING), identidade confirmada. Se número incorreto, pause e desvincule pelo telefone. QR é temporário e desaparece após 25 segundos ou atualização do estado. Caso expire, solicite outro. Se o WhatsApp pedir passkey, use os procedimentos oficiais do aparelho ou pause; esta versão não implementa confirmação de passkey. O botão Pausar sessão interrompe a sessão sem apagar o vínculo, para desvincular definitivamente use Aparelhos conectados no telefone. Sessões existentes sem marca de propriedade do Connect não são adotadas/modificadas.
 
-Com automação ainda desligada, envie uma mensagem de teste do destinatário autorizado para a linha pareada. Verifique se o contador Recebidas do Diagnóstico aumenta. O evento deve ser direto, texto recente, não próprio, sem anexo, e com identidade e destinatário esperados. JIDs @lid não são aceitos pelo piloto atual. Se não incrementar, confira logs privados e o webhook HMAC; não compartilhe payloads nem chaves. Nenhuma resposta automática é esperada nesta fase. Fase 12 vai validar o envio/entrega e persistência após reiniciar o WAHA antes de ativar qualquer linha comercial.
+Com automação ainda desligada, envie uma mensagem de teste do destinatário autorizado para a linha pareada. Verifique se o contador Recebidas do Diagnóstico aumenta. O evento deve ser direto, texto recente, não próprio, sem anexo, e com identidade e destinatário esperados. JIDs @lid e aliases de telefone são aceitos somente quando a API check-exists confirma correspondência exata com um número autorizado. Se não houver correspondência, o evento é descartado. Logs indicam o motivo sem expor IDs ou conteúdo. Se não incrementar, confira logs privados e o webhook HMAC; não compartilhe payloads nem chaves. Com WAHA_AUTOMATION_ENABLED=true, o piloto responde aos contatos autorizados. Fase 12 vai validar o envio/entrega e persistência após reiniciar o WAHA antes de ativar qualquer linha comercial.
 
 ## Testes e limitações
 

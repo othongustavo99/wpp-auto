@@ -27,7 +27,7 @@ export function createApp({ verifyToken, appSecret, automation, databaseCheck, a
         const chunks=[];let size=0;
         for await(const chunk of req){size+=chunk.length;if(size>1024*1024)return send(413,'Payload too large');chunks.push(chunk);}
         const raw=Buffer.concat(chunks);
-        if(!checkSignature(raw,req.headers,waha.hookSecret))return send(401,'Invalid signature');
+        if(!checkSignature(raw,req.headers,waha.hookSecret)){log(JSON.stringify({event:'waha_webhook_rejected',reason:'signature'}));return send(401,'Invalid signature');}
         let event;try{event=JSON.parse(raw.toString('utf8'));}catch{return send(400,'Invalid JSON');}
         await waha.receive(event);return send(200,'OK');
       }

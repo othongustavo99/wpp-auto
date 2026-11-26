@@ -26,8 +26,8 @@ test('menu WAHA numerado com a ordem correta; seleção pelo numero e nome',()=>
  assert.match(formatPayload(plan.payload),/1 — Monte Verde\n2 — Camanducaia\n3 — Cambuí/);assert.equal(decideProfile({type:'text',text:{body:'2'}},'menu',p,true).branch,'camanducaia');assert.equal(decideProfile({type:'text',text:{body:'Cambuí'}},'menu',p,true).branch,'cambui');
 });
 test('WAHA REST autenticada, checagem de identidade antes do envio; sem credenciais no corpo',async()=>{
- const calls=[];let own=expected;const client=createWahaClient({...config,fetchImpl:async(url,opts)=>{calls.push([url,opts]);return json(url.endsWith('/sendText')?{id:'out-123'}:{name:session,status:'WORKING',me:{id:own+'@c.us'}});}});
- assert.equal(await client.send(session,to,{type:'text',text:{body:'Olá'}}),'out-123');assert.equal(calls[0][1].headers['X-Api-Key'],'key');assert.deepEqual(JSON.parse(calls[1][1].body),{session,chatId:to+'@c.us',text:'Olá',linkPreview:false});own='5511914622444';await assert.rejects(()=>client.send(session,to,{type:'text',text:{body:'Olá'}}));assert.equal(calls.filter(c=>c[0].endsWith('/sendText')).length,1);await assert.rejects(()=>client.send(session,'5511999993333',{type:'text',text:{body:'Olá'}}));
+ const calls=[];let own=expected;const client=createWahaClient({...config,fetchImpl:async(url,opts)=>{calls.push([url,opts]);return json(url.endsWith('/sendText')?{id:'out-123'}:url.includes('/contacts/check-exists?')?{numberExists:true,chatId:to+'@c.us'}:{name:session,status:'WORKING',me:{id:own+'@c.us'}});}});
+ assert.equal(await client.send(session,to,{type:'text',text:{body:'Olá'}}),'out-123');assert.equal(calls[0][1].headers['X-Api-Key'],'key');assert.deepEqual(JSON.parse(calls[2][1].body),{session,chatId:to+'@c.us',text:'Olá',linkPreview:false});own='5511914622444';await assert.rejects(()=>client.send(session,to,{type:'text',text:{body:'Olá'}}));assert.equal(calls.filter(c=>c[0].endsWith('/sendText')).length,1);await assert.rejects(()=>client.send(session,'5511999993333',{type:'text',text:{body:'Olá'}}));
 });
 test('diagnóstico WAHA não retorna dados de sessão sensíveis nem marca sessão ausente como OK',async()=>{
  const pool={query:async()=>({rows:[]})};const d=createWahaDiagnostics({pool,config,client:{list:async()=>[]}});assert.deepEqual((await d.report()).api,{connection:{state:'ok'},session:{state:'not_found'},identity:{state:'unknown'}});
@@ -40,3 +40,17 @@ test('motor desligado não insere fila nem envia; webhook antigo desativado no r
 test('motor piloto WAHA enfileira com namespace separado e sem conteúdo livre',async()=>{
  const calls=[];const c={...config,enabled:true};const waha=createWahaTransport({pool:{query:async(...args)=>{calls.push(args);return {rowCount:1}}},config:c,client:{checkIdentity:async()=>true},diagnostics:{record:async()=>{}},testProfile:'forp_02',now:()=>Math.floor(now/1000)*1000});assert.equal(await waha.receive(event),true);assert.equal(calls[0][1][8],'waha_test');assert.equal(calls[0][1][0],session);assert.ok(!JSON.stringify(calls).includes('Olá'));
 });
+
+ test('NOWEB: aceita LID somente quando a consulta do numero autorizado confirma o mesmo chat',async()=>{
+ const lid='123456789012345@lid';let chat=lid;let received=0;const logs=[];
+ const client=createWahaClient({...config,fetchImpl:async(url)=>json(url.includes('/contacts/check-exists?')?{numberExists:true,chatId:chat}:{name:session,status:'WORKING',me:{id:expected+'@c.us'}})});
+ const waha=createWahaTransport({pool:{},config,client,diagnostics:{record:async()=>received++},testProfile:'forp_02',now:()=>now,log:x=>logs.push(x)});
+ const message={...event,payload:{...event.payload,from:lid}};
+ await waha.receive(message);assert.equal(received,1);assert.match(logs[0],/waha_message_received/);
+ chat='222222222222222@lid';await waha.receive(message);assert.equal(received,1);assert.match(logs.at(-1),/recipient_unresolved/);
+ assert.ok(!JSON.stringify(logs).includes(lid));assert.ok(!JSON.stringify(logs).includes(to));
+ });
+ test('envio WAHA usa chatId retornado para contato autorizado',async()=>{
+ const lid='123456789012345@lid';let sent;const client=createWahaClient({...config,fetchImpl:async(url,opts)=>{if(url.endsWith('/sendText')){sent=JSON.parse(opts.body);return json({id:'out'});}return json(url.includes('/contacts/check-exists?')?{numberExists:true,chatId:lid}:{name:session,status:'WORKING',me:{id:expected+'@c.us'}});}});
+ await client.send(session,to,{type:'text',text:{body:'Teste'}});assert.equal(sent.chatId,lid);
+ });
